@@ -1,0 +1,119 @@
+@import "tailwindcss";
+
+/* 自定義主題變數 */
+@theme {
+  --color-primary: #d4af37;
+  --color-dark: #121212;
+  --color-card: #1e1e1e;
+  --font-family-sans: Inter, system-ui, sans-serif;
+}
+
+/* 基礎樣式 */
+body {
+  background-color: #121212;
+  color: #f3f4f6;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+/* 隱藏滾動條 */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* 載入動畫 */
+.initial-loader {
+  position: fixed;
+  inset: 0;
+  background: #121212;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  transition: opacity 0.3s ease-out;
+}
+
+.initial-loader.fade-out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loader-spinner {
+  width: 48px;
+  height: 48px;
+  border: 3px solid #333;
+  border-top-color: #d4af37;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loader-text {
+  color: #d4af37;
+  font-size: 24px;
+  font-weight: bold;
+  margin-bottom: 16px;
+  letter-spacing: 4px;
+}
+
+/* 防止 LINE 瀏覽器下拉關閉手勢 */
+html, body {
+  overscroll-behavior: none;
+  overscroll-behavior-y: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 確保根容器也有此設定 */
+#root {
+  overscroll-behavior: none;
+  overscroll-behavior-y: none;
+}
+
+/* 全螢幕模式下禁止滾動 */
+body.fullscreen-mode {
+  position: fixed;
+  overflow: hidden;
+  touch-action: none;
+  width: 100%;
+  height: 100%;
+}
+
+/* 全螢幕覆蓋層 */
+.fullscreen-overlay {
+  touch-action: none;
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+  user-select: none;
+  -webkit-user-select: none;
+  overflow: hidden;
+}
+
+/* Safe area padding for notch devices */
+.safe-area-top {
+  padding-top: env(safe-area-inset-top, 0);
+}
+
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+/* 防止 LINE 瀏覽器下拉 - 加強版 */
+.prevent-pull-refresh {
+  overscroll-behavior-y: none;
+  -webkit-overflow-scrolling: auto;
+}
+
+/* Canvas 簽名區域 */
+canvas {
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+}

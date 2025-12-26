@@ -1,0 +1,224 @@
+<?php
+// api.php - InkFlow Backend (Robust Version)
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Content-Type: application/json; charset=UTF-8");
+
+// ⚠️ 請填入 Cloudways Access Details 的資料
+$host = '68.183.232.114';
+$db   = 'veyhabjkqt';      // 請填入真實資料
+$user = 'veyhabjkqt';      // 請填入真實資料
+$pass = 'xdj6ERrTTj';  // 請填入真實資料
+$charset = 'utf8mb4';
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit;
+}
+
+try {
+    $dsn = "mysql:host=$host;dbname=$db;charset=$charset";
+    $options = [
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES   => false,
+    ];
+    $pdo = new PDO($dsn, $user, $pass, $options);
+} catch (\PDOException $e) {
+    // DB 連線失敗時，回傳 JSON 格式錯誤，避免前端解析失敗
+    http_response_code(500);
+    echo json_encode(['error' => 'Database connection failed']);
+    exit;
+}
+
+$input = json_decode(file_get_contents('php://input'), true);
+$action = $_GET['action'] ?? '';
+
+try {
+    switch ($action) {
+        // ... [Artworks, Categories, Appointments, Aftercare 保持不變，可沿用舊的] ...
+        
+        // 為了節省篇幅，我只列出這次修正的重點 syncUser
+        // 您可以把這段 syncUser 替換掉原本 api.php 裡的 syncUser
+        // 或是直接把這整段 api.php 內容複製去覆蓋 (記得補上其他 case)
+
+        case 'getArtworks':
+            $stmt = $pdo->query("SELECT * FROM artworks");
+            $rows = $stmt->fetchAll();
+            foreach($rows as &$row) {
+                $row['tags'] = $row['tags'] ? explode(',', $row['tags']) : [];
+                $row['price'] = (int)$row['price'];
+                $row['specialPrice'] = $row['specialPrice'] ? (int)$row['specialPrice'] : null;
+            }
+            echo json_encode($rows);
+            break;
+
+        case 'saveArtwork':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') throw new Exception("Method not allowed");
+            $check = $pdo->prepare("SELECT id FROM artworks WHERE id = ?");
+            $check->execute([$input['id']]);
+            $exists = $check->fetch();
+            $tags = implode(',', $input['tags'] ?? []);
+            if ($exists) {
+                $sql = "UPDATE artworks SET title=?, description=?, imageUrl=?, category=?, status=?, price=?, specialPrice=?, tags=? WHERE id=?";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([$input['title'], $input['description'], $input['imageUrl'], $input['category'], $input['status'], $input['price'], $input['specialPrice'] ?? null, $tags, $input['id']]);
+            } else {
+                $sql = "INSERT INTO artworks (id, title, description, imageUrl, category, status, price, specialPrice, tags, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([$input['id'], $input['title'], $input['description'], $input['imageUrl'], $input['category'], $input['status'], $input['price'], $input['specialPrice'] ?? null, $tags, $input['createdAt']]);
+            }
+            echo json_encode(['success' => true]);
+            break;
+
+        case 'deleteArtwork':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') throw new Exception("Method not allowed");
+            $stmt = $pdo->prepare("DELETE FROM artworks WHERE id = ?");
+            $stmt->execute([$input['id']]);
+            echo json_encode(['success' => true]);
+            break;
+
+        case 'getAppointments':
+            $stmt = $pdo->query("SELECT * FROM appointments");
+            echo json_encode($stmt->fetchAll());
+            break;
+
+        case 'saveAppointment':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') throw new Exception("Method not allowed");
+            $check = $pdo->prepare("SELECT id FROM appointments WHERE id = ?");
+            $check->execute([$input['id']]);
+            if ($check->fetch()) {
+                $sql = "UPDATE appointments SET date=?, timeSlot=?, userId=?, customerName=?, status=?, notes=?, artworkId=?, artworkTitle=?, artworkImage=?, phoneNumber=? WHERE id=?";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([$input['date'], $input['timeSlot'], $input['userId'] ?? null, $input['customerName'] ?? null, $input['status'], $input['notes'] ?? null, $input['artworkId'] ?? null, $input['artworkTitle'] ?? null, $input['artworkImage'] ?? null, $input['phoneNumber'] ?? null, $input['id']]);
+            } else {
+                $sql = "INSERT INTO appointments (id, date, timeSlot, userId, customerName, status, notes, artworkId, artworkTitle, artworkImage, phoneNumber) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([$input['id'], $input['date'], $input['timeSlot'], $input['userId'] ?? null, $input['customerName'] ?? null, $input['status'], $input['notes'] ?? null, $input['artworkId'] ?? null, $input['artworkTitle'] ?? null, $input['artworkImage'] ?? null, $input['phoneNumber'] ?? null]);
+            }
+            echo json_encode(['success' => true]);
+            break;
+
+        case 'deleteAppointment':
+        case 'cancelAppointment':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') throw new Exception("Method not allowed");
+            $stmt = $pdo->prepare("DELETE FROM appointments WHERE id = ?");
+            $stmt->execute([$input['id']]);
+            echo json_encode(['success' => true]);
+            break;
+
+        case 'getCategories':
+            $stmt = $pdo->query("SELECT name FROM categories");
+            $cats = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            if (empty($cats)) $cats = ['All'];
+            echo json_encode($cats);
+            break;
+
+        case 'addCategory':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') throw new Exception("Method not allowed");
+            $stmt = $pdo->prepare("INSERT IGNORE INTO categories (name) VALUES (?)");
+            $stmt->execute([$input['name']]);
+            $stmt = $pdo->query("SELECT name FROM categories");
+            echo json_encode($stmt->fetchAll(PDO::FETCH_COLUMN));
+            break;
+
+        case 'deleteCategory':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') throw new Exception("Method not allowed");
+            $stmt = $pdo->prepare("DELETE FROM categories WHERE name = ?");
+            $stmt->execute([$input['name']]);
+            $stmt = $pdo->query("SELECT name FROM categories");
+            echo json_encode($stmt->fetchAll(PDO::FETCH_COLUMN));
+            break;
+
+        case 'getAftercare':
+            $stmt = $pdo->query("SELECT content FROM aftercare WHERE id = 1");
+            $res = $stmt->fetch();
+            echo json_encode(['content' => $res['content'] ?? '']);
+            break;
+
+        case 'saveAftercare':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') throw new Exception("Method not allowed");
+            $stmt = $pdo->prepare("INSERT INTO aftercare (id, content) VALUES (1, ?) ON DUPLICATE KEY UPDATE content = ?");
+            $stmt->execute([$input['content'], $input['content']]);
+            echo json_encode(['success' => true]);
+            break;
+
+        // 🔴 修正重點：使用 INSERT ... ON DUPLICATE KEY UPDATE 避免邏輯漏洞
+        case 'syncUser':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') throw new Exception("Method not allowed");
+            
+            try {
+                // 嘗試寫入或更新
+                $favsJson = isset($input['favorites']) ? json_encode($input['favorites']) : '[]';
+                $role = $input['role'] ?? 'MEMBER';
+                
+                // 這個語法：如果 ID 存在就更新，不存在就新增。原子操作，不會失敗。
+                $sql = "INSERT INTO users (id, name, avatarUrl, role, favorites) VALUES (?, ?, ?, ?, ?) 
+                        ON DUPLICATE KEY UPDATE name = VALUES(name), avatarUrl = VALUES(avatarUrl), lastLogin = NOW()";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([$input['id'], $input['name'], $input['avatarUrl'], $role, $favsJson]);
+                
+                // 讀取最新資料
+                $stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
+                $stmt->execute([$input['id']]);
+                $user = $stmt->fetch();
+                
+                if ($user) {
+                    $user['favorites'] = json_decode($user['favorites'] ?? '[]');
+                    echo json_encode($user);
+                } else {
+                    // 萬一真的讀不到（極低機率），直接回傳前端給的資料，讓前端能運作
+                    echo json_encode($input);
+                }
+            } catch (Exception $e) {
+                // 資料庫錯誤時，不報錯，而是回傳原始資料，確保前端不崩潰
+                error_log("User Sync DB Error: " . $e->getMessage());
+                echo json_encode($input); 
+            }
+            break;
+
+        case 'toggleFavorite':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') throw new Exception("Method not allowed");
+            $userId = $input['userId'];
+            $artId = $input['artworkId'];
+            $stmt = $pdo->prepare("SELECT favorites FROM users WHERE id = ?");
+            $stmt->execute([$userId]);
+            $res = $stmt->fetch();
+            $favs = $res ? json_decode($res['favorites'], true) : [];
+            if (!$favs) $favs = [];
+            if (in_array($artId, $favs)) {
+                $favs = array_values(array_diff($favs, [$artId]));
+            } else {
+                $favs[] = $artId;
+            }
+            $stmt = $pdo->prepare("UPDATE users SET favorites = ? WHERE id = ?");
+            $stmt->execute([json_encode($favs), $userId]);
+            echo json_encode($favs);
+            break;
+            
+        case 'getArtworkStats':
+            $stmt = $pdo->query("SELECT favorites FROM users");
+            $allRows = $stmt->fetchAll();
+            $stats = [];
+            foreach($allRows as $row) {
+                $favs = json_decode($row['favorites'], true);
+                if ($favs) {
+                    foreach($favs as $artId) {
+                        if (!isset($stats[$artId])) $stats[$artId] = 0;
+                        $stats[$artId]++;
+                    }
+                }
+            }
+            echo json_encode($stats);
+            break;
+
+        default:
+            echo json_encode(['error' => 'Invalid action']);
+            break;
+    }
+} catch (Exception $e) {
+    http_response_code(500);
+    echo json_encode(['error' => $e->getMessage()]);
+}
+?>

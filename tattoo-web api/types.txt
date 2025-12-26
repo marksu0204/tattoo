@@ -1,0 +1,62 @@
+
+// Mock credentials for Admin
+export const ADMIN_CREDENTIALS = {
+  email: 'fatedavid@gmail.com',
+  password: '$gn01227110'
+};
+
+// Replace with your actual LINE ID (without @)
+export const LINE_ID = '270vwddw';
+
+// Define types using interfaces/types instead of enums to avoid build errors
+export const ArtworkStatus = {
+  AVAILABLE: 'AVAILABLE',
+  CLAIMED: 'CLAIMED',
+} as const;
+export type ArtworkStatus = typeof ArtworkStatus[keyof typeof ArtworkStatus];
+
+export const UserRole = {
+  GUEST: 'GUEST',
+  MEMBER: 'MEMBER', // Logged in via LINE
+  ADMIN: 'ADMIN',
+} as const;
+export type UserRole = typeof UserRole[keyof typeof UserRole];
+
+export interface Artwork {
+  id: string;
+  title: string;
+  description: string;
+  imageUrl: string;
+  category: string;
+  status: ArtworkStatus;
+  price?: number; // Original Price
+  specialPrice?: number; // Sale Price
+  createdAt: string;
+  tags: string[];
+}
+
+export interface User {
+  id: string;
+  name: string;
+  avatarUrl?: string;
+  role: UserRole;
+  email?: string;
+  lineUserId?: string;
+  favorites?: string[]; // Array of Artwork IDs
+}
+
+export interface Appointment {
+  id: string;
+  date: string; // YYYY-MM-DD
+  timeSlot: string; // e.g., "14:00"
+  userId?: string; // If null, it's just an open slot
+  customerName?: string;
+  phoneNumber?: string; // New: Customer Phone Number
+  // Status: OPEN (Green), PENDING (Yellow - Waiting for Deposit), BOOKED (Red - Confirmed), COMPLETED (Gray)
+  status: 'OPEN' | 'PENDING' | 'BOOKED' | 'COMPLETED';
+  notes?: string;
+  // New fields for linking artwork
+  artworkId?: string;
+  artworkTitle?: string;
+  artworkImage?: string;
+}

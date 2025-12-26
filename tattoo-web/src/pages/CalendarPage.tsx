@@ -1,0 +1,603 @@
+
+import React, { useState, useEffect } from 'react';
+import { db } from '../services/mockBackend';
+import { Appointment, UserRole, Artwork, LINE_ID } from '../types';
+import { useApp } from '../App';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { ChevronLeft, ChevronRight, Plus, X, Trash2, Clock, User, FileText, Calendar as CalendarIcon, Phone, AlertTriangle, PenTool, MessageCircle } from 'lucide-react';
+
+const CalendarPage: React.FC = () => {
+  const { user } = useApp();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [currentDate, setCurrentDate] = useState(new Date());
+  
+  // Artwork Context (if coming from Artwork Detail)
+  const [selectedArtwork, setSelectedArtwork] = useState<Artwork | null>(null);
+
+  // --- Modal State ---
+  const [isModalOpen, setIsModalOpen] = useState(false); // Admin Manage Slot
+  const [isDepositModalOpen, setIsDepositModalOpen] = useState(false); // Success/Reminder
+  const [isBookingModalOpen, setIsBookingModalOpen] = useState(false); // User Booking Input
+  const [isLocationNoticeOpen, setIsLocationNoticeOpen] = useState(true); // Location Notice
+  const [editingApt, setEditingApt] = useState<Appointment | null>(null); // Null = New, Object = Edit
+  
+  // --- Admin Form State ---
+  const [formDate, setFormDate] = useState('');
+  const [formTime, setFormTime] = useState('10:00'); // Updated default to 10:00
+  const [formStatus, setFormStatus] = useState<'OPEN' | 'PENDING' | 'WAITING_PAYMENT' | 'SIGNING' | 'SIGNED' | 'BOOKED' | 'COMPLETED'>('OPEN');
+  const [formCustomer, setFormCustomer] = useState('');
+  const [formPhone, setFormPhone] = useState(''); // New: Admin Phone Input
+  const [formNotes, setFormNotes] = useState('');
+  const [formArtworkTitle, setFormArtworkTitle] = useState('');
+  const [formTotalPrice, setFormTotalPrice] = useState<string>(''); // 總價
+  const [formDepositPaid, setFormDepositPaid] = useState<string>(''); // 已付訂金
+
+  // --- User Booking Form State ---
+  const [bookingSlot, setBookingSlot] = useState<Appointment | null>(null);
+  const [userPhone, setUserPhone] = useState('');
+
+  useEffect(() => {
+    loadAppointments();
+    // Check if we have artwork data passed from navigation
+    if (location.state && location.state.artwork) {
+        setSelectedArtwork(location.state.artwork);
+    }
+  }, [location]);
+
+  const loadAppointments = async () => {
+    const data = await db.getAppointments();
+    setAppointments(data);
+  };
+
+  // --- Date Helpers ---
+  const getDaysInMonth = (date: Date) => {
+    return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  };
+
+  const changeMonth = (offset: number) => {
+    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + offset, 1));
+  };
+
+  const getAppointmentsForDay = (day: number) => {
+    const dateStr = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const dailyApts = appointments.filter(a => a.date === dateStr).sort((a, b) => a.timeSlot.localeCompare(b.timeSlot));
+    
+    // Filter logic: Admins see everything. Guests ONLY see OPEN slots.
+    if (user?.role === UserRole.ADMIN) {
+        return dailyApts;
+    } else {
+        return dailyApts.filter(a => a.status === 'OPEN');
+    }
+  };
+
+  // 檢查日期是否為過去（今天或之前）
+  const isPastDate = (day: number) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const checkDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), day);
+    checkDate.setHours(0, 0, 0, 0);
+    return checkDate <= today;
+  };
+
+  // --- Handlers ---
+
+  // Open Modal for NEW Slot (Admin)
+  const openNewModal = (day: number) => {
+    const dateStr = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    setEditingApt(null);
+    setFormDate(dateStr);
+    setFormTime('10:00'); // Default to 10:00 as requested
+    setFormStatus('OPEN');
+    setFormCustomer('');
+    setFormPhone('');
+    setFormNotes('');
+    setFormArtworkTitle('');
+    setFormTotalPrice('');
+    setFormDepositPaid('');
+    setIsModalOpen(true);
+  };
+
+  // Open Modal for EDITING Slot (Admin)
+  const openEditModal = (apt: Appointment) => {
+    setEditingApt(apt);
+    setFormDate(apt.date);
+    setFormTime(apt.timeSlot);
+    setFormStatus(apt.status);
+    setFormCustomer(apt.customerName || '');
+    setFormPhone(apt.phoneNumber || '');
+    setFormNotes(apt.notes || '');
+    setFormArtworkTitle(apt.artworkTitle || '');
+    setFormTotalPrice(apt.totalPrice ? apt.totalPrice.toString() : '');
+    setFormDepositPaid(apt.depositPaid ? apt.depositPaid.toString() : '');
+    setIsModalOpen(true);
+  };
+
+  const handleSaveAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    // If admin changes date/time of a occupied slot, we must preserve the original user data
+    const isOccupied = formStatus !== 'OPEN';
+    const preserveUser = isOccupied && editingApt?.userId;
+
+    const appointmentData: Appointment = {
+      id: editingApt ? editingApt.id : Date.now().toString(),
+      date: formDate,
+      timeSlot: formTime,
+      status: formStatus,
+      customerName: formCustomer,
+      phoneNumber: formPhone, // Save Admin Input
+      notes: formNotes,
+      userId: preserveUser ? editingApt!.userId : undefined,
+      artworkId: editingApt?.artworkId,
+      artworkTitle: formArtworkTitle,
+      artworkImage: editingApt?.artworkImage,
+      totalPrice: formTotalPrice ? parseInt(formTotalPrice) : undefined,
+      depositPaid: formDepositPaid ? parseInt(formDepositPaid) : undefined
+    };
+
+    await db.saveAppointment(appointmentData);
+    setIsModalOpen(false);
+    loadAppointments();
+  };
+
+  const handleDelete = async () => {
+    if (!editingApt) return;
+    if (window.confirm('確定要刪除這個預約時段嗎？')) {
+      await db.deleteAppointment(editingApt.id);
+      setIsModalOpen(false);
+      loadAppointments();
+    }
+  };
+
+  // User Action: Open Booking Modal
+  const initUserBooking = (apt: Appointment) => {
+      if (!user) return;
+      setBookingSlot(apt);
+      setUserPhone(''); // Reset phone
+      setIsBookingModalOpen(true);
+  };
+
+  // User Action: Confirm Booking
+  const handleConfirmBooking = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !bookingSlot) return;
+    
+    await db.saveAppointment({
+        ...bookingSlot,
+        status: 'PENDING',
+        userId: user.id,
+        customerName: user.name,
+        phoneNumber: userPhone.trim(),
+        notes: selectedArtwork ? `預約認領圖: ${selectedArtwork.title}` : '線上預約',
+        artworkId: selectedArtwork?.id,
+        artworkTitle: selectedArtwork?.title,
+        artworkImage: selectedArtwork?.imageUrl
+    });
+    
+    setIsBookingModalOpen(false);
+    // Clear selection
+    setSelectedArtwork(null);
+    navigate(location.pathname, { replace: true, state: {} });
+    
+    // Show Deposit Modal
+    setIsDepositModalOpen(true);
+    
+    loadAppointments();
+  };
+
+  // Cleanup function when closing Deposit Modal
+  const handleCloseDepositModal = () => {
+      setIsDepositModalOpen(false);
+      setBookingSlot(null);
+      setSelectedArtwork(null);
+      // Clear URL state to remove artwork context
+      navigate(location.pathname, { replace: true, state: {} });
+  };
+
+  const clearSelection = () => {
+      setSelectedArtwork(null);
+      navigate(location.pathname, { replace: true, state: {} });
+  };
+
+  // Helper to generate LINE link for deposit confirmation
+  const getDepositLineUrl = () => {
+      if (!bookingSlot) return '#';
+      
+      const artInfo = selectedArtwork ? `\n🖼️ 預約圖案: ${selectedArtwork.title}` : '';
+      const message = `你好！我已送出預約申請：\n\n📅 日期: ${bookingSlot.date}\n⏰ 時間: ${bookingSlot.timeSlot}${artInfo}\n📞 電話: ${userPhone}\n\n請協助確認訂金匯款資訊，謝謝！`;
+      
+      // Auto copy to clipboard when clicked
+      navigator.clipboard.writeText(message).catch(() => {});
+
+      // Important: Add trailing slash before query parameters
+      return `https://line.me/R/oaMessage/@${LINE_ID}/?${encodeURIComponent(message)}`;
+  };
+
+  // --- Render Helpers ---
+  const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1).getDay();
+  const daysInMonth = getDaysInMonth(currentDate);
+
+      const getStatusColor = (status: string) => {
+      switch(status) {
+          case 'OPEN': return 'bg-green-900/20 text-green-400 border-green-900/50 hover:bg-green-900/40';
+          case 'PENDING': return 'bg-yellow-900/20 text-yellow-400 border-yellow-900/50 hover:bg-yellow-900/40';
+          case 'WAITING_PAYMENT': return 'bg-orange-900/20 text-orange-400 border-orange-900/50 hover:bg-orange-900/40';
+          case 'SIGNING': return 'bg-blue-900/20 text-blue-400 border-blue-900/50 hover:bg-blue-900/40';
+          case 'SIGNED': return 'bg-purple-900/20 text-purple-400 border-purple-900/50 hover:bg-purple-900/40';
+          case 'BOOKED': return 'bg-red-900/20 text-red-400 border-red-900/50 hover:bg-red-900/40';
+          case 'COMPLETED': return 'bg-gray-700 text-gray-400 border-gray-600';
+          default: return 'bg-gray-800';
+      }
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 pb-12 relative">
+      
+      {/* Sticky Header with high z-index and solid background for readability */}
+      <div className="sticky top-16 z-40 bg-dark pt-4 pb-4 -mx-4 px-4 border-b border-white/10 mb-4 shadow-xl">
+        <div className="flex flex-col md:flex-row justify-between items-center gap-4 max-w-7xl mx-auto">
+            <h1 className="text-2xl md:text-3xl font-bold text-white">
+                {user?.role === UserRole.ADMIN ? '排程管理' : '預約時段'}
+            </h1>
+            <div className="flex items-center gap-4 bg-card px-4 py-2 rounded-full border border-white/10 shadow-lg">
+                <button onClick={() => changeMonth(-1)} className="p-2 hover:bg-gray-700 rounded-full transition-colors"><ChevronLeft size={20}/></button>
+                <span className="text-lg font-medium w-40 text-center select-none text-primary">
+                    {currentDate.toLocaleString('zh-TW', { month: 'long', year: 'numeric' })}
+                </span>
+                <button onClick={() => changeMonth(1)} className="p-2 hover:bg-gray-700 rounded-full transition-colors"><ChevronRight size={20}/></button>
+            </div>
+        </div>
+
+        {/* Selected Artwork Context Banner (Inside Sticky Header) */}
+        {selectedArtwork && (
+            <div className="mt-4 max-w-7xl mx-auto bg-primary/10 border border-primary text-primary px-4 py-3 rounded-lg flex justify-between items-center animate-pulse">
+                <div className="flex items-center gap-3">
+                    <img src={selectedArtwork.imageUrl} alt="" className="w-10 h-10 rounded object-cover border border-primary/50" />
+                    <div>
+                        <p className="font-bold text-sm">正在預約: {selectedArtwork.title}</p>
+                        <p className="text-xs opacity-80 hidden sm:block">請在下方選擇一個「可預約 (Open)」的時段。</p>
+                    </div>
+                </div>
+                <button onClick={clearSelection} className="text-xs hover:underline opacity-70 hover:opacity-100 flex items-center gap-1">
+                    <X size={14}/> 取消選擇
+                </button>
+            </div>
+        )}
+      </div>
+
+      {/* Calendar Grid */}
+      <div className="grid grid-cols-7 gap-px bg-gray-800 border border-gray-800 rounded-xl overflow-hidden shadow-2xl mt-4">
+        {['日', '一', '二', '三', '四', '五', '六'].map(day => (
+          <div key={day} className="bg-dark py-3 text-center text-xs font-bold uppercase tracking-widest text-gray-500">
+            {day}
+          </div>
+        ))}
+
+        {/* Empty cells */}
+        {Array.from({ length: firstDayOfMonth }).map((_, i) => (
+          <div key={`empty-${i}`} className="bg-card/50 min-h-[100px] md:min-h-[140px]" />
+        ))}
+
+        {/* Days */}
+        {Array.from({ length: daysInMonth }).map((_, i) => {
+          const day = i + 1;
+          const dayAppointments = getAppointmentsForDay(day);
+          const isToday = new Date().toDateString() === new Date(currentDate.getFullYear(), currentDate.getMonth(), day).toDateString();
+          const isPast = isPastDate(day);
+          
+          // 一般用戶：過去日期不顯示預約時段
+          const visibleAppointments = (user?.role === UserRole.ADMIN) ? dayAppointments : (isPast ? [] : dayAppointments);
+          
+          return (
+            <div key={day} className={`bg-card min-h-[100px] md:min-h-[140px] p-2 transition-colors relative group border-t border-l border-white/5 ${isToday ? 'bg-white/5' : isPast && user?.role !== UserRole.ADMIN ? 'bg-gray-900/50 opacity-50' : 'hover:bg-gray-800'}`}>
+              <span className={`text-sm font-bold block mb-2 ${isToday ? 'text-primary' : isPast ? 'text-gray-600' : 'text-gray-400'}`}>{day}</span>
+              
+              {/* Admin: Add Button (Visible on Hover) */}
+              {user?.role === UserRole.ADMIN && (
+                <button 
+                  onClick={(e) => { e.stopPropagation(); openNewModal(day); }}
+                  className="absolute top-2 right-2 text-gray-600 hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity p-1"
+                >
+                  <Plus size={18} />
+                </button>
+              )}
+
+              <div className="space-y-1.5 overflow-y-auto max-h-[80px] no-scrollbar">
+                {visibleAppointments.map(apt => (
+                  <div 
+                    key={apt.id} 
+                    onClick={() => {
+                        if (user?.role === UserRole.ADMIN) {
+                            openEditModal(apt);
+                        } else if (apt.status === 'OPEN' && !isPast) {
+                            initUserBooking(apt);
+                        }
+                    }}
+                    className={`text-xs px-2 py-1.5 rounded border cursor-pointer truncate transition-transform hover:scale-[1.02] flex items-center justify-between ${getStatusColor(apt.status)}`}
+                  >
+                    <div className="flex items-center gap-1 overflow-hidden">
+                        <span className="font-bold whitespace-nowrap">{apt.timeSlot}</span>
+                        {/* Show Artwork Icon if booked with one */}
+                        {apt.artworkImage && (
+                            <img src={apt.artworkImage} className="w-3 h-3 rounded-full object-cover flex-shrink-0" alt="art"/>
+                        )}
+                        <span className="truncate">
+                            {apt.status === 'OPEN' ? '可預約' : (user?.role === UserRole.ADMIN ? (apt.customerName || '已預約') : '已預約')}
+                        </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* --- User Booking Modal (Phone Input) --- */}
+      {isBookingModalOpen && bookingSlot && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+               <div className="bg-card w-full max-w-md rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-fade-in">
+                    <div className="p-5 border-b border-white/10 flex justify-between items-center bg-dark/50">
+                        <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                           確認預約資訊
+                        </h3>
+                        <button onClick={() => setIsBookingModalOpen(false)} className="text-gray-400 hover:text-white"><X size={24}/></button>
+                    </div>
+                    
+                    <form onSubmit={handleConfirmBooking} className="p-6 space-y-4">
+                        <div className="bg-primary/10 border border-primary/30 p-4 rounded-lg mb-4">
+                            <p className="text-primary font-bold">{bookingSlot.date} @ {bookingSlot.timeSlot}</p>
+                            {selectedArtwork && <p className="text-sm text-gray-300 mt-1">預約圖案: {selectedArtwork.title}</p>}
+                        </div>
+
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 uppercase mb-1 flex items-center gap-1">
+                                <Phone size={12}/> 手機號碼 (必填)
+                            </label>
+                            <input 
+                                type="tel" 
+                                value={userPhone}
+                                onChange={(e) => setUserPhone(e.target.value)}
+                                placeholder="0912-345-678"
+                                className="w-full bg-dark border border-gray-700 rounded-lg p-3 text-white focus:border-primary focus:outline-none"
+                                required
+                            />
+                            <p className="text-xs text-gray-500 mt-1">我們將使用此號碼聯繫您關於預約的事宜。</p>
+                        </div>
+
+                        <button 
+                            type="submit"
+                            className="w-full bg-primary text-black font-bold py-3 rounded-lg hover:bg-yellow-500 shadow-lg shadow-primary/20 mt-4"
+                        >
+                            確認送出預約
+                        </button>
+                    </form>
+               </div>
+          </div>
+      )}
+
+      {/* --- Admin Management Modal --- */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+            <div className="bg-card w-full max-w-md rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-fade-in">
+                
+                {/* Modal Header */}
+                <div className="p-5 border-b border-white/10 flex justify-between items-center bg-dark/50">
+                    <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                        {editingApt ? <FileText size={20} className="text-primary"/> : <Plus size={20} className="text-primary"/>}
+                        {editingApt ? '編輯時段' : '新增可預約時段'}
+                    </h3>
+                    <button onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-white transition-colors">
+                        <X size={24} />
+                    </button>
+                </div>
+
+                <form onSubmit={handleSaveAdmin} className="p-6 space-y-5">
+                    
+                    {/* Date & Time */}
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 uppercase mb-1 flex items-center gap-1"><CalendarIcon size={12}/> 日期</label>
+                            <input 
+                                type="date" 
+                                value={formDate} 
+                                onChange={e => setFormDate(e.target.value)}
+                                className="w-full bg-dark border border-gray-700 rounded-lg p-2.5 text-white focus:border-primary focus:outline-none"
+                                required
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 uppercase mb-1 flex items-center gap-1"><Clock size={12}/> 時間</label>
+                            <input 
+                                type="time" 
+                                value={formTime} 
+                                onChange={e => setFormTime(e.target.value)}
+                                className="w-full bg-dark border border-gray-700 rounded-lg p-2.5 text-white focus:border-primary focus:outline-none"
+                                required
+                            />
+                        </div>
+                    </div>
+
+                    {/* Status */}
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">狀態</label>
+                        <select 
+                            value={formStatus}
+                            onChange={(e) => setFormStatus(e.target.value as any)}
+                            className="w-full bg-dark border border-gray-700 rounded-lg p-2.5 text-white focus:border-primary focus:outline-none"
+                        >
+                            <option value="OPEN">🟢 Open (可預約)</option>
+                            <option value="PENDING">🟡 Pending (待審核)</option>
+                            <option value="WAITING_PAYMENT">🟠 Waiting Payment (待付款)</option>
+                            <option value="SIGNING">🔵 Signing (簽屬中)</option>
+                            <option value="SIGNED">🟣 Signed (簽屬完成)</option>
+                            <option value="BOOKED">🔴 Booked (已確認)</option>
+                            <option value="COMPLETED">⚫ Completed (已完成)</option>
+                        </select>
+                    </div>
+
+                    {/* Customer Info (Editable for Admin) */}
+                    <div className={`space-y-4 p-4 rounded-lg border border-white/5 bg-white/5 ${formStatus === 'OPEN' ? 'opacity-50 pointer-events-none' : ''}`}>
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 uppercase mb-1 flex items-center gap-1"><User size={12}/> 顧客姓名</label>
+                            <input 
+                                type="text" 
+                                value={formCustomer} 
+                                onChange={e => setFormCustomer(e.target.value)}
+                                placeholder="e.g. Alice Chen"
+                                className="w-full bg-dark border border-gray-700 rounded-lg p-2.5 text-white focus:border-primary focus:outline-none"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 uppercase mb-1 flex items-center gap-1"><Phone size={12}/> 手機號碼</label>
+                            <input 
+                                type="tel" 
+                                value={formPhone} 
+                                onChange={e => setFormPhone(e.target.value)}
+                                placeholder="e.g. 0912-345-678"
+                                className="w-full bg-dark border border-gray-700 rounded-lg p-2.5 text-white focus:border-primary focus:outline-none"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 uppercase mb-1 flex items-center gap-1"><PenTool size={12}/> 作品 / 設計資訊</label>
+                            <input 
+                                type="text" 
+                                value={formArtworkTitle} 
+                                onChange={e => setFormArtworkTitle(e.target.value)}
+                                placeholder="例如：手繪花草設計 或 作品ID"
+                                className="w-full bg-dark border border-gray-700 rounded-lg p-2.5 text-white focus:border-primary focus:outline-none"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">備註</label>
+                            <textarea 
+                                value={formNotes} 
+                                onChange={e => setFormNotes(e.target.value)}
+                                placeholder="關於此預約的細節..."
+                                className="w-full bg-dark border border-gray-700 rounded-lg p-2.5 text-white h-16 text-sm focus:border-primary focus:outline-none resize-none"
+                            />
+                        </div>
+                        
+                        {/* 價格區塊 */}
+                        <div className="grid grid-cols-2 gap-4 pt-2 border-t border-gray-700">
+                            <div>
+                                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">💰 總價 (NT$)</label>
+                                <input 
+                                    type="number" 
+                                    value={formTotalPrice} 
+                                    onChange={e => setFormTotalPrice(e.target.value)}
+                                    placeholder="例如: 5000"
+                                    className="w-full bg-dark border border-gray-700 rounded-lg p-2.5 text-white focus:border-primary focus:outline-none"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">✅ 已付訂金 (NT$)</label>
+                                <input 
+                                    type="number" 
+                                    value={formDepositPaid} 
+                                    onChange={e => setFormDepositPaid(e.target.value)}
+                                    placeholder="例如: 1000"
+                                    className="w-full bg-dark border border-gray-700 rounded-lg p-2.5 text-white focus:border-primary focus:outline-none"
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex gap-3 pt-2">
+                        {editingApt && (
+                            <button 
+                                type="button"
+                                onClick={handleDelete}
+                                className="flex-1 bg-red-900/30 text-red-400 border border-red-900 font-bold py-3 rounded-lg hover:bg-red-900/50 flex items-center justify-center gap-2"
+                            >
+                                <Trash2 size={18} /> 刪除
+                            </button>
+                        )}
+                        <button 
+                            type="submit"
+                            className="flex-[2] bg-primary text-black font-bold py-3 rounded-lg hover:bg-yellow-500 shadow-lg shadow-primary/20"
+                        >
+                            {editingApt ? '更新預約' : '建立時段'}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+      )}
+
+      {/* Deposit Reminder Modal (User Facing) */}
+      {isDepositModalOpen && (
+          <div className="fixed inset-0 bg-black/90 z-[60] flex items-center justify-center p-4">
+              <div className="bg-card w-full max-w-md rounded-2xl border border-primary shadow-[0_0_30px_rgba(212,175,55,0.2)] animate-scale-up">
+                  <div className="p-8 text-center">
+                      <div className="w-16 h-16 bg-primary/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                          <AlertTriangle className="text-primary" size={32} />
+                      </div>
+                      <h2 className="text-2xl font-bold text-white mb-2">預約申請已送出！</h2>
+                      <p className="text-gray-300 mb-6">
+                          您的時段目前標記為 <span className="text-yellow-400 font-bold">待審核 (PENDING)</span>。
+                      </p>
+                      
+                      <div className="bg-white/5 p-4 rounded-lg border border-white/10 text-left mb-6">
+                          <p className="text-sm text-gray-300 leading-relaxed">
+                              請於24小時內與刺青師確認預約事項，並且聯繫匯款訂金，若是沒有收到聯繫資訊的話，超過24小時候會將訂單取消，還請見諒，謝謝！
+                          </p>
+                      </div>
+
+                      <a 
+                          href={getDepositLineUrl()}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={handleCloseDepositModal}
+                          className="w-full bg-[#06c755] hover:bg-[#05b34c] text-white font-bold py-3 rounded-lg flex items-center justify-center transition-colors shadow-lg shadow-green-900/20 no-underline"
+                      >
+                          <MessageCircle className="mr-2" size={20} />
+                          LINE 聯繫確認
+                      </a>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Location Notice Modal */}
+      {isLocationNoticeOpen && (
+          <div className="fixed inset-0 bg-black/80 z-[70] flex items-center justify-center p-4">
+              <div className="bg-card w-full max-w-md rounded-2xl border border-white/10 shadow-2xl animate-fade-in">
+                  <div className="p-6">
+                      <div className="flex items-center justify-between mb-4">
+                          <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                              <AlertTriangle className="text-primary" size={24} />
+                              提醒
+                          </h3>
+                          <button 
+                              onClick={() => setIsLocationNoticeOpen(false)} 
+                              className="text-gray-400 hover:text-white transition-colors"
+                          >
+                              <X size={24} />
+                          </button>
+                      </div>
+                      
+                      <div className="bg-primary/10 border border-primary/30 p-4 rounded-lg mb-6">
+                          <p className="text-white text-center leading-relaxed">
+                              此行事曆為台南刺青行事曆，台北的部分請另外諮詢，謝謝
+                          </p>
+                      </div>
+
+                      <button 
+                          onClick={() => setIsLocationNoticeOpen(false)}
+                          className="w-full bg-primary text-black font-bold py-3 rounded-lg hover:bg-yellow-500 transition-colors shadow-lg shadow-primary/20"
+                      >
+                          我知道了
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+    </div>
+  );
+};
+
+export default CalendarPage;

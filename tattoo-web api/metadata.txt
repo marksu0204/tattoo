@@ -1,0 +1,5 @@
+{
+    "name": "InkFlow Tattoo Studio",
+    "description": "A professional tattoo portfolio and booking management system with LINE integration and AI-powered tools.",
+    "requestFramePermissions": []
+  }

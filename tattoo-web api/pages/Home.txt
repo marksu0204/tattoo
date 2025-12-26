@@ -1,0 +1,174 @@
+
+import React, { useState, useEffect } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { db } from '../services/mockBackend';
+import { Artwork, ArtworkStatus } from '../types';
+import { Filter, Heart } from 'lucide-react';
+import { useApp } from '../App';
+
+const Home: React.FC = () => {
+  const { user, refreshUser } = useApp();
+  const [searchParams, setSearchParams] = useSearchParams();
+  
+  // Read category from URL, default to 'All'
+  const selectedCategory = searchParams.get('category') || 'All';
+
+  const [artworks, setArtworks] = useState<Artwork[]>([]);
+  const [filteredArtworks, setFilteredArtworks] = useState<Artwork[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  useEffect(() => {
+    if (selectedCategory === 'All') {
+      setFilteredArtworks(artworks);
+    } else if (selectedCategory === 'Favorites') {
+      const favs = user?.favorites || [];
+      setFilteredArtworks(artworks.filter(a => favs.includes(a.id)));
+    } else {
+      setFilteredArtworks(artworks.filter(a => a.category === selectedCategory));
+    }
+  }, [selectedCategory, artworks, user]);
+
+  const loadData = async () => {
+    setIsLoading(true);
+    const [arts, cats] = await Promise.all([
+        db.getArtworks(),
+        db.getCategories()
+    ]);
+    
+    // Sort: Available first, then by date
+    const sorted = arts.sort((a: Artwork, b: Artwork) => {
+      if (a.status === b.status) {
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      }
+      return a.status === ArtworkStatus.AVAILABLE ? -1 : 1;
+    });
+
+    setArtworks(sorted);
+    setCategories(cats);
+    setIsLoading(false);
+  };
+
+  const setCategory = (cat: string) => {
+    setSearchParams({ category: cat });
+  };
+
+  const toggleFavorite = async (e: React.MouseEvent, artId: string) => {
+    e.preventDefault(); // Prevent link click
+    if (!user) {
+        alert('請先登入才能使用收藏功能！');
+        return;
+    }
+    await db.toggleFavorite(user.id, artId);
+    await refreshUser(); // Update global user state to reflect new favorites
+  };
+
+  const isFavorite = (artId: string) => {
+      return user?.favorites?.includes(artId);
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      
+      {/* Hero / Intro */}
+      <div className="mb-10 text-center">
+        <h1 className="text-4xl md:text-5xl font-bold text-white mb-4 tracking-tight">INKFLOW</h1>
+        <p className="text-gray-400 max-w-xl mx-auto">
+          探索原創刺青設計，尋找屬於您的靈魂印記。
+        </p>
+      </div>
+
+      {/* Category Filter */}
+      <div className="flex overflow-x-auto no-scrollbar gap-3 mb-8 pb-2 items-center sm:justify-center">
+        <div className="flex items-center text-gray-500 mr-2"><Filter size={16} /></div>
+        {categories.map((cat: string) => (
+          <button
+            key={cat}
+            onClick={() => setCategory(cat)}
+            className={`whitespace-nowrap px-4 py-2 rounded-full text-sm font-medium transition-all ${
+              selectedCategory === cat 
+                ? 'bg-primary text-black' 
+                : 'bg-card text-gray-400 hover:bg-gray-800 hover:text-white'
+            }`}
+          >
+            {cat === 'All' ? '全部' : cat}
+          </button>
+        ))}
+        {/* Favorites Filter */}
+        {user && (
+            <button
+                onClick={() => setCategory('Favorites')}
+                className={`whitespace-nowrap px-4 py-2 rounded-full text-sm font-medium transition-all flex items-center gap-2 ${
+                selectedCategory === 'Favorites'
+                    ? 'bg-pink-600 text-white' 
+                    : 'bg-card text-gray-400 hover:bg-gray-800 hover:text-white'
+                }`}
+            >
+                <Heart size={14} className="fill-current" /> 我的收藏
+            </button>
+        )}
+      </div>
+
+      {/* Grid */}
+      {isLoading ? (
+        <div className="text-center py-20 text-gray-500">正在載入作品...</div>
+      ) : (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
+          {filteredArtworks.map(artwork => (
+            <Link to={`/artwork/${artwork.id}`} key={artwork.id} className="group relative block aspect-[3/4] overflow-hidden rounded-lg bg-gray-900">
+              <img 
+                src={artwork.imageUrl} 
+                alt={artwork.title}
+                className={`w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 ${artwork.status === ArtworkStatus.CLAIMED ? 'opacity-50 grayscale' : ''}`}
+              />
+              
+              {/* Overlay Gradient */}
+              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+              
+              {/* Content on Hover */}
+              <div className="absolute bottom-0 left-0 p-4 w-full translate-y-4 group-hover:translate-y-0 transition-transform duration-300">
+                <h3 className="text-white font-bold truncate">{artwork.title}</h3>
+                <div className="flex justify-between items-center">
+                    <p className="text-xs text-gray-300">{artwork.category}</p>
+                    {/* Price hint */}
+                    {artwork.specialPrice && (
+                        <span className="text-xs bg-red-600 text-white px-1.5 py-0.5 rounded font-bold">特價</span>
+                    )}
+                </div>
+              </div>
+
+              {/* Status Badge */}
+              <div className={`absolute top-2 right-2 px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${
+                artwork.status === ArtworkStatus.CLAIMED ? 'bg-red-900/80 text-red-200' : 'bg-green-900/80 text-green-200'
+              }`}>
+                {artwork.status === ArtworkStatus.CLAIMED ? '已認領' : '未認領'}
+              </div>
+
+              {/* Favorite Button */}
+              <button
+                onClick={(e) => toggleFavorite(e, artwork.id)}
+                className={`absolute top-2 left-2 p-2 rounded-full transition-all hover:scale-110 z-10 ${
+                    isFavorite(artwork.id) ? 'text-pink-500 bg-white/10' : 'text-gray-300/50 hover:text-pink-500'
+                }`}
+              >
+                  <Heart size={20} className={isFavorite(artwork.id) ? "fill-current" : ""} />
+              </button>
+            </Link>
+          ))}
+        </div>
+      )}
+
+      {!isLoading && filteredArtworks.length === 0 && (
+        <div className="text-center py-20 text-gray-500">
+          找不到相關設計。
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default Home;

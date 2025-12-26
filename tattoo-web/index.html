@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-TW" style="overscroll-behavior: none; overscroll-behavior-y: none;">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>InkFlow Tattoo Studio</title>
+    
+    <!-- 預載入關鍵資源 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    
+    <!-- 異步載入字體（不阻擋渲染） -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"></noscript>
+    
+    <!-- 關鍵 CSS - 首屏載入動畫（內聯以避免閃爍） -->
+    <style>
+      /* 防止 LINE 內建瀏覽器下拉關閉手勢 */
+      html, body {
+        overscroll-behavior: none;
+        overscroll-behavior-y: none;
+        -webkit-overflow-scrolling: touch;
+      }
+      body { 
+        background-color: #121212; 
+        color: #f3f4f6; 
+        font-family: Inter, system-ui, sans-serif;
+        margin: 0;
+        position: relative;
+      }
+      .initial-loader {
+        position: fixed;
+        inset: 0;
+        background: #121212;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        transition: opacity 0.3s ease-out;
+      }
+      .initial-loader.fade-out {
+        opacity: 0;
+        pointer-events: none;
+      }
+      .loader-spinner {
+        width: 48px;
+        height: 48px;
+        border: 3px solid #333;
+        border-top-color: #d4af37;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      .loader-text {
+        color: #d4af37;
+        font-size: 24px;
+        font-weight: bold;
+        margin-bottom: 16px;
+        letter-spacing: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- 初始載入動畫 -->
+    <div id="initial-loader" class="initial-loader">
+      <div style="text-align: center;">
+        <div class="loader-text">INKFLOW</div>
+        <div class="loader-spinner"></div>
+      </div>
+    </div>
+    
+    <div id="root"></div>
+    
+    <script>
+      // 當 React 載入完成後隱藏載入動畫
+      window.addEventListener('load', function() {
+        setTimeout(function() {
+          var loader = document.getElementById('initial-loader');
+          if (loader) {
+            loader.classList.add('fade-out');
+            setTimeout(function() { loader.remove(); }, 300);
+          }
+        }, 100);
+      });
+      
+      // 防止 LINE 內建瀏覽器下拉關閉手勢
+      (function() {
+        var startY = 0;
+        var currentY = 0;
+        
+        document.addEventListener('touchstart', function(e) {
+          startY = e.touches[0].pageY;
+        }, { passive: true });
+        
+        document.addEventListener('touchmove', function(e) {
+          currentY = e.touches[0].pageY;
+          var scrollTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
+          
+          // 當頁面已在頂部且用戶試圖向下拉時，阻止默認行為
+          if (scrollTop <= 0 && currentY > startY) {
+            e.preventDefault();
+          }
+        }, { passive: false });
+      })();
+    </script>
+    
+    <!-- CRITICAL: This script tag connects HTML to your React code -->
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
