@@ -132,7 +132,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
       <footer className="bg-black py-8 border-t border-white/5 print:hidden">
         <div className="max-w-7xl mx-auto px-4 text-center">
-            <h2 className="text-xl font-bold text-primary mb-2">台南市東區仁東街</h2>
+            <h2 className="text-xl font-bold text-primary mb-2">成品圖歡迎參考IG</h2>
             <div className="flex justify-center gap-4 mb-4">
                 <a href="https://www.instagram.com/beigahtattoo/" target="_blank" rel="noreferrer" className="text-gray-400 hover:text-white">
                   <Instagram size={24} />
