@@ -61,6 +61,20 @@ const AdminDashboard: React.FC = () => {
       consentNotes: ''
   });
 
+  // --- Custom Order Modal State ---
+  const [isCustomOrderModalOpen, setIsCustomOrderModalOpen] = useState(false);
+  const [customOrderForm, setCustomOrderForm] = useState({
+      selectedCustomerId: '',
+      totalPrice: '',
+      depositAmount: '',
+      notes: ''
+  });
+
+  // --- Custom Image Upload Modal State ---
+  const [isCustomImageModalOpen, setIsCustomImageModalOpen] = useState(false);
+  const [uploadingAptId, setUploadingAptId] = useState<string | null>(null);
+  const [customImageUrl, setCustomImageUrl] = useState('');
+
   useEffect(() => {
     loadData();
     loadCategories();
@@ -552,6 +566,121 @@ ${consentLink}`;
       }
   };
 
+  // --- Custom Order Handler ---
+  const handleCreateCustomOrder = async () => {
+      if (!customOrderForm.selectedCustomerId) {
+          alert('請選擇顧客');
+          return;
+      }
+      if (!customOrderForm.totalPrice || !customOrderForm.depositAmount) {
+          alert('請填寫總金額和訂金金額');
+          return;
+      }
+
+      try {
+          const selectedCustomer = customers.find(c => c.id === customOrderForm.selectedCustomerId);
+
+          if (!selectedCustomer) {
+              alert('找不到選中的顧客');
+              return;
+          }
+
+          // 生成唯一的預約ID
+          const appointmentId = `custom_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+          const totalPrice = parseInt(customOrderForm.totalPrice);
+          const depositAmount = parseInt(customOrderForm.depositAmount);
+
+          if (isNaN(totalPrice) || isNaN(depositAmount)) {
+              alert('請輸入有效的金額');
+              return;
+          }
+
+          // 創建客製圖預約 - 初始狀態為 WAITING_PAYMENT（待付款）
+          const newAppointment: Appointment = {
+              id: appointmentId,
+              date: new Date().toISOString().split('T')[0],
+              timeSlot: '待定',
+              userId: selectedCustomer.id,
+              customerName: selectedCustomer.name,
+              phoneNumber: (selectedCustomer as any).phoneNumber || '',
+              status: 'WAITING_PAYMENT', // 客製圖直接進入待付款狀態
+              orderType: 'CUSTOM',
+              notes: customOrderForm.notes || '客製圖訂單',
+              artworkId: undefined, // 客製圖開單時沒有作品
+              artworkTitle: '客製圖（製作中）',
+              artworkImage: undefined, // 稍後上傳
+              totalPrice: totalPrice,
+              depositPaid: depositAmount
+          };
+
+          await db.saveAppointment(newAppointment);
+          
+          // 重置表單並關閉彈窗
+          setCustomOrderForm({
+              selectedCustomerId: '',
+              totalPrice: '',
+              depositAmount: '',
+              notes: ''
+          });
+          setIsCustomOrderModalOpen(false);
+          
+          loadData();
+          
+          alert('客製圖訂單創建成功！請複製訂金訊息傳送給客人。');
+      } catch (error: any) {
+          alert(`創建失敗: ${error.message}`);
+      }
+  };
+
+  // --- 上傳客製圖片 ---
+  const openCustomImageUpload = (apt: Appointment) => {
+      setUploadingAptId(apt.id);
+      setCustomImageUrl(apt.artworkImage || '');
+      setIsCustomImageModalOpen(true);
+  };
+
+  const handleCustomImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+              setCustomImageUrl(reader.result as string);
+          };
+          reader.readAsDataURL(file);
+      }
+  };
+
+  const saveCustomImage = async () => {
+      if (!uploadingAptId || !customImageUrl) {
+          alert('請上傳圖片');
+          return;
+      }
+
+      try {
+          const apt = appointments.find(a => a.id === uploadingAptId);
+          if (!apt) {
+              alert('找不到訂單');
+              return;
+          }
+
+          const updatedApt: Appointment = {
+              ...apt,
+              artworkImage: customImageUrl,
+              artworkTitle: '客製圖（已完成）'
+          };
+
+          await db.saveAppointment(updatedApt);
+          setIsCustomImageModalOpen(false);
+          setUploadingAptId(null);
+          setCustomImageUrl('');
+          loadData();
+          alert('客製圖片上傳成功！現在可以傳送同意書給客人。');
+      } catch (error: any) {
+          alert(`上傳失敗: ${error.message}`);
+      }
+  };
+
   const handleEditAppointment = (apt: Appointment) => {
       setEditingApt(apt);
       
@@ -819,7 +948,23 @@ ${consentLink}`;
 
       {/* --- Appointment List --- */}
       {activeTab === 'appointments' && (
-        <div className="bg-card rounded-xl border border-white/5 overflow-hidden">
+        <div>
+          {/* 創建客製圖訂單按鈕 - 放在頁面頂部，更明顯 */}
+          <div className="mb-6 flex justify-between items-center bg-card p-4 rounded-xl border border-white/5">
+            <div>
+              <h2 className="text-lg font-bold text-white">預約列表</h2>
+              <p className="text-sm text-gray-400 mt-1">管理所有預約訂單</p>
+            </div>
+            <button
+              onClick={() => setIsCustomOrderModalOpen(true)}
+              className="bg-primary text-black font-bold px-6 py-3 rounded-lg hover:bg-yellow-500 transition-colors flex items-center gap-2 shadow-lg hover:shadow-xl"
+            >
+              <Plus size={20} />
+              創建客製圖訂單
+            </button>
+          </div>
+
+          <div className="bg-card rounded-xl border border-white/5 overflow-hidden">
              {appointments.length === 0 ? (
                  <div className="text-center py-20 text-gray-500">
                      目前沒有預約資料。
@@ -854,27 +999,40 @@ ${consentLink}`;
                                 )}
                             </td>
                             <td className="px-6 py-4">
-                                {apt.artworkTitle ? (
-                                    <div className="flex items-center gap-2">
-                                        {apt.artworkImage && (
-                                            <img src={apt.artworkImage} className="w-8 h-8 rounded object-cover border border-white/10" alt="art"/>
-                                        )}
-                                        <div>
-                                            {apt.artworkId ? (
-                                                <button
-                                                    onClick={() => navigate(`/artwork/${apt.artworkId}`)}
-                                                    className="text-white text-sm hover:text-primary transition-colors cursor-pointer text-left"
-                                                >
-                                                    {apt.artworkTitle}
-                                                </button>
-                                            ) : (
-                                                <p className="text-white text-sm">{apt.artworkTitle}</p>
+                                <div className="flex flex-col gap-2">
+                                    {/* 訂單類型標籤 */}
+                                    {apt.orderType && (
+                                        <span className={`inline-flex items-center w-fit px-2 py-0.5 rounded text-xs font-bold ${
+                                            apt.orderType === 'CUSTOM' 
+                                                ? 'bg-purple-900/30 text-purple-400 border border-purple-900/50' 
+                                                : 'bg-blue-900/30 text-blue-400 border border-blue-900/50'
+                                        }`}>
+                                            {apt.orderType === 'CUSTOM' ? '客製圖' : '認領圖'}
+                                        </span>
+                                    )}
+                                    {/* 作品資訊 */}
+                                    {apt.artworkTitle ? (
+                                        <div className="flex items-center gap-2">
+                                            {apt.artworkImage && (
+                                                <img src={apt.artworkImage} className="w-8 h-8 rounded object-cover border border-white/10" alt="art"/>
                                             )}
+                                            <div>
+                                                {apt.artworkId ? (
+                                                    <button
+                                                        onClick={() => navigate(`/artwork/${apt.artworkId}`)}
+                                                        className="text-white text-sm hover:text-primary transition-colors cursor-pointer text-left"
+                                                    >
+                                                        {apt.artworkTitle}
+                                                    </button>
+                                                ) : (
+                                                    <p className="text-white text-sm">{apt.artworkTitle}</p>
+                                                )}
+                                            </div>
                                         </div>
-                                    </div>
-                                ) : (
-                                    <p className="text-gray-500 text-sm italic">{apt.notes || '無備註'}</p>
-                                )}
+                                    ) : (
+                                        <p className="text-gray-500 text-sm italic">{apt.notes || '無備註'}</p>
+                                    )}
+                                </div>
                             </td>
                             <td className="px-6 py-4">
                                 {apt.status === 'PENDING' && (
@@ -906,78 +1064,104 @@ ${consentLink}`;
                                     <span className="bg-gray-700 text-gray-400 px-2 py-1 rounded text-xs font-bold">已完成</span>
                                 )}
                             </td>
-                            <td className="px-6 py-4 text-right space-x-2">
-                                {apt.status === 'PENDING' && (
-                                    <>
+                            <td className="px-6 py-4 text-right">
+                                <div className="flex flex-wrap gap-1 justify-end">
+                                    {/* 認領圖：待審核 → 確認訂金 */}
+                                    {apt.status === 'PENDING' && apt.orderType !== 'CUSTOM' && (
                                         <button 
                                             onClick={() => openDepositModal(apt)}
                                             className="bg-primary text-black text-xs font-bold px-3 py-1.5 rounded hover:bg-yellow-500 transition-colors"
                                         >
                                             確認訂金
                                         </button>
-                                    </>
-                                )}
-                                {apt.status === 'WAITING_PAYMENT' && (
-                                    <>
+                                    )}
+                                    
+                                    {/* 待付款：複製訂金訊息 + 已收到訂金 */}
+                                    {apt.status === 'WAITING_PAYMENT' && (
+                                        <>
+                                            <button 
+                                                onClick={() => copyDepositMessage(apt)}
+                                                className="bg-blue-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-blue-500 transition-colors flex items-center gap-1"
+                                            >
+                                                <Copy size={12}/> 複製訂金訊息
+                                            </button>
+                                            <button 
+                                                onClick={() => confirmReceivedDeposit(apt)}
+                                                className="bg-green-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-green-500 transition-colors"
+                                            >
+                                                已收到訂金
+                                            </button>
+                                        </>
+                                    )}
+                                    
+                                    {/* 客製圖：簽屬中狀態 - 如果沒有圖片，顯示上傳按鈕 */}
+                                    {apt.status === 'SIGNING' && apt.orderType === 'CUSTOM' && !apt.artworkImage && (
                                         <button 
-                                            onClick={() => copyDepositMessage(apt)}
-                                            className="bg-blue-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-blue-500 transition-colors flex items-center gap-1"
+                                            onClick={() => openCustomImageUpload(apt)}
+                                            className="bg-purple-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-purple-500 transition-colors flex items-center gap-1"
                                         >
-                                            <Copy size={12}/> 複製訂金訊息
+                                            <Plus size={12}/> 上傳客製圖片
                                         </button>
-                                        <button 
-                                            onClick={() => confirmReceivedDeposit(apt)}
-                                            className="bg-green-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-green-500 transition-colors"
-                                        >
-                                            已收到訂金
-                                        </button>
-                                    </>
-                                )}
-                                {apt.status === 'SIGNING' && (
-                                    <>
+                                    )}
+                                    
+                                    {/* 客製圖：簽屬中狀態 - 如果有圖片，顯示複製同意書訊息 */}
+                                    {apt.status === 'SIGNING' && (apt.orderType !== 'CUSTOM' || apt.artworkImage) && (
                                         <button 
                                             onClick={() => copyConsentMessage(apt)}
                                             className="bg-blue-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-blue-500 transition-colors flex items-center gap-1"
                                         >
                                             <Copy size={12}/> 複製同意書訊息
                                         </button>
-                                    </>
-                                )}
-                                {apt.status === 'SIGNED' && (
-                                    <>
+                                    )}
+                                    
+                                    {/* 客製圖：簽屬中狀態 - 有圖片時也可以更換圖片 */}
+                                    {apt.status === 'SIGNING' && apt.orderType === 'CUSTOM' && apt.artworkImage && (
+                                        <button 
+                                            onClick={() => openCustomImageUpload(apt)}
+                                            className="bg-gray-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-gray-500 transition-colors flex items-center gap-1"
+                                        >
+                                            <Edit size={12}/> 更換圖片
+                                        </button>
+                                    )}
+                                    
+                                    {/* 簽屬完成：查看簽署書 */}
+                                    {apt.status === 'SIGNED' && (
                                         <button 
                                             onClick={() => navigate(`/consent/${apt.id}`)}
                                             className="bg-purple-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-purple-500 transition-colors"
                                         >
                                             查看簽署書
                                         </button>
-                                    </>
-                                )}
-                                <button
-                                    onClick={() => copyAppointmentLink(apt.id)}
-                                    className="bg-indigo-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-indigo-500 transition-colors flex items-center gap-1"
-                                    title="複製訂單查看連結給客人"
-                                >
-                                    <Copy size={12}/> 訂單連結
-                                </button>
-                                <button
-                                    onClick={() => handleEditAppointment(apt)}
-                                    className="bg-gray-700 hover:bg-white hover:text-black text-gray-300 text-xs font-bold px-3 py-1.5 rounded transition-colors"
-                                >
-                                    <Edit size={14}/>
-                                </button>
-                                <button 
-                                    onClick={() => cancelAppointment(apt.id)}
-                                    className="text-red-400 hover:text-red-300 hover:bg-red-900/20 px-3 py-1.5 rounded text-xs font-bold border border-red-900/30"
-                                >
-                                    取消
-                                </button>
+                                    )}
+                                    
+                                    {/* 通用按鈕 */}
+                                    <button
+                                        onClick={() => copyAppointmentLink(apt.id)}
+                                        className="bg-indigo-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-indigo-500 transition-colors flex items-center gap-1"
+                                        title="複製訂單查看連結給客人"
+                                    >
+                                        <Copy size={12}/> 訂單連結
+                                    </button>
+                                    <button
+                                        onClick={() => handleEditAppointment(apt)}
+                                        className="bg-gray-700 hover:bg-white hover:text-black text-gray-300 text-xs font-bold px-3 py-1.5 rounded transition-colors"
+                                    >
+                                        <Edit size={14}/>
+                                    </button>
+                                    <button 
+                                        onClick={() => cancelAppointment(apt.id)}
+                                        className="text-red-400 hover:text-red-300 hover:bg-red-900/20 px-3 py-1.5 rounded text-xs font-bold border border-red-900/30"
+                                    >
+                                        取消
+                                    </button>
+                                </div>
                             </td>
                         </tr>
                     ))}
                     </tbody>
                 </table>
              )}
+          </div>
         </div>
       )}
 
@@ -1498,6 +1682,236 @@ ${consentLink}`;
                   <button onClick={() => setIsCatManagerOpen(false)} className="w-full mt-4 text-gray-400 text-sm hover:text-white">關閉</button>
               </div>
           </div>
+      )}
+
+      {/* --- Custom Order Modal --- */}
+      {isCustomOrderModalOpen && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+          <div className="bg-card w-full max-w-2xl rounded-2xl shadow-2xl border border-white/10">
+            <div className="p-6 border-b border-white/10 flex justify-between items-center">
+              <div>
+                <h2 className="text-xl font-bold text-white">創建客製圖訂單</h2>
+                <p className="text-sm text-gray-400 mt-1">客製圖流程：開單 → 收訂金 → 製作 → 上傳圖片 → 傳送同意書</p>
+              </div>
+              <button 
+                onClick={() => {
+                  setIsCustomOrderModalOpen(false);
+                  setCustomOrderForm({
+                      selectedCustomerId: '',
+                      totalPrice: '',
+                      depositAmount: '',
+                      notes: ''
+                  });
+                }} 
+                className="text-gray-400 hover:text-white"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-6">
+              {/* 步驟 1：選擇顧客 */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  <span className="bg-primary text-black px-2 py-0.5 rounded text-xs mr-2">步驟 1</span>
+                  選擇顧客 <span className="text-red-400">*</span>
+                </label>
+                <select
+                  value={customOrderForm.selectedCustomerId}
+                  onChange={(e) => setCustomOrderForm({...customOrderForm, selectedCustomerId: e.target.value})}
+                  className="w-full bg-dark border border-gray-700 rounded-lg px-4 py-3 text-white focus:border-primary focus:outline-none"
+                  required
+                >
+                  <option value="">請選擇顧客</option>
+                  {customers.map(customer => (
+                    <option key={customer.id} value={customer.id}>
+                      {customer.name}
+                    </option>
+                  ))}
+                </select>
+                {customOrderForm.selectedCustomerId && (
+                  <div className="mt-3 flex items-center gap-3 p-3 bg-dark rounded-lg border border-white/5">
+                    {(() => {
+                      const selectedCust = customers.find(c => c.id === customOrderForm.selectedCustomerId);
+                      return selectedCust ? (
+                        <>
+                          {selectedCust.avatarUrl ? (
+                            <img src={selectedCust.avatarUrl} alt={selectedCust.name} className="w-12 h-12 rounded-full border-2 border-primary object-cover" />
+                          ) : (
+                            <div className="w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center border-2 border-primary">
+                              <User size={24} className="text-gray-400" />
+                            </div>
+                          )}
+                          <div>
+                            <p className="text-white font-bold">{selectedCust.name}</p>
+                            <p className="text-gray-400 text-sm">ID: {selectedCust.id}</p>
+                          </div>
+                        </>
+                      ) : null;
+                    })()}
+                  </div>
+                )}
+              </div>
+
+              {/* 步驟 2：填寫金額 */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    <span className="bg-primary text-black px-2 py-0.5 rounded text-xs mr-2">步驟 2</span>
+                    總金額 <span className="text-red-400">*</span>
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400">$</span>
+                    <input
+                      type="number"
+                      value={customOrderForm.totalPrice}
+                      onChange={(e) => setCustomOrderForm({...customOrderForm, totalPrice: e.target.value})}
+                      className="w-full bg-dark border border-gray-700 rounded-lg pl-8 pr-4 py-3 text-white focus:border-primary focus:outline-none"
+                      placeholder="例：5000"
+                      required
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    訂金金額 <span className="text-red-400">*</span>
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400">$</span>
+                    <input
+                      type="number"
+                      value={customOrderForm.depositAmount}
+                      onChange={(e) => setCustomOrderForm({...customOrderForm, depositAmount: e.target.value})}
+                      className="w-full bg-dark border border-gray-700 rounded-lg pl-8 pr-4 py-3 text-white focus:border-primary focus:outline-none"
+                      placeholder="例：2000"
+                      required
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* 步驟 3：備註 */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  <span className="bg-primary text-black px-2 py-0.5 rounded text-xs mr-2">步驟 3</span>
+                  客製圖備註（選填）
+                </label>
+                <textarea
+                  value={customOrderForm.notes}
+                  onChange={(e) => setCustomOrderForm({...customOrderForm, notes: e.target.value})}
+                  className="w-full bg-dark border border-gray-700 rounded-lg px-4 py-3 text-white focus:border-primary focus:outline-none resize-none"
+                  rows={3}
+                  placeholder="例：客人想要的圖案描述、尺寸、位置等..."
+                />
+              </div>
+
+              {/* 提示訊息 */}
+              <div className="bg-blue-900/20 border border-blue-900/50 rounded-lg p-4">
+                <p className="text-blue-400 text-sm">
+                  <strong>💡 提示：</strong>創建訂單後，系統會自動進入「待付款」狀態。
+                  您可以複製訂金訊息傳送給客人，收到訂金後再點擊「已收到訂金」。
+                </p>
+              </div>
+
+              {/* 按鈕 */}
+              <div className="flex gap-3 pt-4">
+                <button
+                  onClick={handleCreateCustomOrder}
+                  className="flex-1 bg-primary text-black font-bold px-4 py-3 rounded-lg hover:bg-yellow-500 transition-colors flex items-center justify-center gap-2"
+                >
+                  <Plus size={20} />
+                  創建客製圖訂單
+                </button>
+                <button
+                  onClick={() => {
+                    setIsCustomOrderModalOpen(false);
+                    setCustomOrderForm({
+                        selectedCustomerId: '',
+                        totalPrice: '',
+                        depositAmount: '',
+                        notes: ''
+                    });
+                  }}
+                  className="flex-1 bg-gray-700 text-white font-bold px-4 py-3 rounded-lg hover:bg-gray-600 transition-colors"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- Custom Image Upload Modal --- */}
+      {isCustomImageModalOpen && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+          <div className="bg-card w-full max-w-lg rounded-2xl shadow-2xl border border-white/10">
+            <div className="p-6 border-b border-white/10 flex justify-between items-center">
+              <h2 className="text-xl font-bold text-white">上傳客製圖片</h2>
+              <button 
+                onClick={() => {
+                  setIsCustomImageModalOpen(false);
+                  setUploadingAptId(null);
+                  setCustomImageUrl('');
+                }} 
+                className="text-gray-400 hover:text-white"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-6">
+              <div className="border-2 border-dashed border-gray-700 rounded-xl p-6 text-center hover:border-primary transition-colors cursor-pointer relative">
+                <input 
+                  type="file" 
+                  accept="image/*"
+                  onChange={handleCustomImageChange}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+                {customImageUrl ? (
+                  <img src={customImageUrl} alt="客製圖預覽" className="mx-auto max-h-60 object-contain rounded-lg" />
+                ) : (
+                  <div className="text-gray-500">
+                    <Plus className="mx-auto mb-2" size={32} />
+                    <p className="font-medium">點擊上傳客製圖片</p>
+                    <p className="text-xs mt-1">支援 JPG、PNG 格式</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-green-900/20 border border-green-900/50 rounded-lg p-4">
+                <p className="text-green-400 text-sm">
+                  <strong>💡 提示：</strong>上傳圖片後，您可以傳送同意書連結給客人進行簽署。
+                </p>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={saveCustomImage}
+                  disabled={!customImageUrl}
+                  className={`flex-1 font-bold px-4 py-3 rounded-lg transition-colors flex items-center justify-center gap-2 ${
+                    customImageUrl 
+                      ? 'bg-primary text-black hover:bg-yellow-500' 
+                      : 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                  }`}
+                >
+                  <Save size={20} />
+                  儲存圖片
+                </button>
+                <button
+                  onClick={() => {
+                    setIsCustomImageModalOpen(false);
+                    setUploadingAptId(null);
+                    setCustomImageUrl('');
+                  }}
+                  className="flex-1 bg-gray-700 text-white font-bold px-4 py-3 rounded-lg hover:bg-gray-600 transition-colors"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

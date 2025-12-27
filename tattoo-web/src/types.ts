@@ -56,6 +56,7 @@ export interface Appointment {
   phoneNumber?: string; // New: Customer Phone Number
   // Status: OPEN (Green), PENDING (Yellow - 待審核), WAITING_PAYMENT (Orange - 待付款), SIGNING (Blue - 簽屬中), SIGNED (Purple - 簽屬完成), BOOKED (Red - 已確認), COMPLETED (Gray - 已完成)
   status: 'OPEN' | 'PENDING' | 'WAITING_PAYMENT' | 'SIGNING' | 'SIGNED' | 'BOOKED' | 'COMPLETED';
+  orderType?: 'CLAIMED' | 'CUSTOM'; // 訂單類型：CLAIMED=認領圖, CUSTOM=客製圖
   notes?: string;
   // New fields for linking artwork
   artworkId?: string;

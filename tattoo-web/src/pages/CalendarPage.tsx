@@ -170,6 +170,7 @@ const CalendarPage: React.FC = () => {
         userId: user.id,
         customerName: user.name,
         phoneNumber: userPhone.trim(),
+        orderType: 'CLAIMED', // 標記為認領圖訂單
         notes: selectedArtwork ? `預約認領圖: ${selectedArtwork.title}` : '線上預約',
         artworkId: selectedArtwork?.id,
         artworkTitle: selectedArtwork?.title,
