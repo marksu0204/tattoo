@@ -135,7 +135,7 @@ try {
                     $updateOldArtwork->execute([$oldArtworkId]);
                 }
                 
-                $sql = "UPDATE appointments SET date=?, timeSlot=?, userId=?, customerName=?, status=?, notes=?, artworkId=?, artworkTitle=?, artworkImage=?, phoneNumber=?, totalPrice=?, depositPaid=?, tattooPosition=?, tattooSize=?, tattooColor=?, consentNotes=? WHERE id=?";
+                $sql = "UPDATE appointments SET date=?, timeSlot=?, userId=?, customerName=?, status=?, notes=?, artworkId=?, artworkTitle=?, artworkImage=?, phoneNumber=?, totalPrice=?, depositPaid=?, tattooPosition=?, tattooSize=?, tattooColor=?, consentNotes=?, orderType=? WHERE id=?";
                 $stmt = $pdo->prepare($sql);
                 $stmt->execute([
                     $input['date'], 
@@ -154,10 +154,11 @@ try {
                     $input['tattooSize'] ?? null,
                     $input['tattooColor'] ?? null,
                     $input['consentNotes'] ?? null,
+                    $input['orderType'] ?? 'CLAIMED', // 預設為認領圖，保持向後兼容
                     $input['id']
                 ]);
             } else {
-                $sql = "INSERT INTO appointments (id, date, timeSlot, userId, customerName, status, notes, artworkId, artworkTitle, artworkImage, phoneNumber, totalPrice, depositPaid, tattooPosition, tattooSize, tattooColor, consentNotes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                $sql = "INSERT INTO appointments (id, date, timeSlot, userId, customerName, status, notes, artworkId, artworkTitle, artworkImage, phoneNumber, totalPrice, depositPaid, tattooPosition, tattooSize, tattooColor, consentNotes, orderType) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
                 $stmt = $pdo->prepare($sql);
                 $stmt->execute([
                     $input['id'], 
@@ -176,7 +177,8 @@ try {
                     $input['tattooPosition'] ?? null,
                     $input['tattooSize'] ?? null,
                     $input['tattooColor'] ?? null,
-                    $input['consentNotes'] ?? null
+                    $input['consentNotes'] ?? null,
+                    $input['orderType'] ?? 'CLAIMED' // 預設為認領圖，保持向後兼容
                 ]);
             }
             
