@@ -1,14 +1,94 @@
 
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { db } from '../services/mockBackend';
+import React, { useState, useEffect, useRef } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { db, hasAdminToken } from '../services/mockBackend';
 import { generateArtworkDetails } from '../services/geminiService';
 import { Artwork, ArtworkStatus, Appointment } from '../types'; 
-import { Plus, Trash2, Edit, Sparkles, X, Settings, Heart, Calendar, CheckCircle, Clock, User, FileText, Save, Phone, Layers, Eye, ArrowUpDown, ArrowUp, ArrowDown, Copy, DollarSign, Users } from 'lucide-react';
+import { Plus, Trash2, Edit, Sparkles, X, Settings, Heart, Calendar, CheckCircle, Clock, User, FileText, Save, Phone, Layers, Eye, ArrowUpDown, ArrowUp, ArrowDown, Copy, DollarSign, Users, PenTool, Eraser, BarChart2, Tag, MessageSquare, Search, UserCog, Palette, ShieldCheck } from 'lucide-react';
+import LineartTool from '../components/LineartTool';
+import RemoveBgTool from '../components/RemoveBgTool';
+import BatchPngRegenerator from '../components/BatchPngRegenerator';
+import TaxonomyMigrationPanel from '../components/TaxonomyMigrationPanel';
+import ArtworkTaxonomyManager from '../components/ArtworkTaxonomyManager';
+import ArtworkTagSelector from '../components/ArtworkTagSelector';
+import AnalyticsTab from '../components/AnalyticsTab';
+import LineMessagingTab, { CustomerTagModal } from '../components/LineMessagingTab';
+import AdminAppointmentActions from '../components/AdminAppointmentActions';
+import { MemberTag } from '../types';
+import { ARTWORK_PLACEMENT_OPTIONS, normalizeArtworkPlacementKeys, type ArtworkPlacementKey } from '../utils/artworkPlacements';
+import { compressPngForUpload } from '../utils/compressPngForUpload';
+import {
+  ARTWORK_PREVIEW_FILTER_LABELS,
+  formatRecommendedLength,
+  getArtworkPlacementState,
+  getArtworkPreviewCompleteness,
+  hasArtworkPng,
+  hasValidArtworkPlacements,
+  hasValidRecommendedLength,
+  matchesArtworkPreviewFilter,
+  type ArtworkPreviewDataFilter,
+} from '../utils/artworkPreviewData';
+import {
+  AdminAppointmentFilter,
+  ADMIN_APPOINTMENT_FILTER_LABELS,
+  countPendingActionAppointments,
+  filterAppointments,
+  getAdminStatusBadgeClass,
+  getAdminStatusLabel,
+} from '../utils/adminAppointmentStatus';
+import { getArtworkClaimAdminLabel, isArtworkClaimedForAdmin } from '../utils/artworkFilters';
+import { deriveLegacyCategoryFromTags, emptyTaxonomyCatalog } from '../utils/artworkTaxonomy';
+import { buildAppOriginUrl } from '../utils/appUrl';
+import {
+  REMOVE_BG_PRESET_SETTING_KEY,
+  SYSTEM_DEFAULT_REMOVE_BG_PRESET,
+  formatRemoveBgPresetSummary,
+  generateTransparentPng,
+  normalizeRemoveBgPreset,
+  type RemoveBgPreset,
+  type TransparentPngResult,
+} from '../utils/removeBackgroundPreset';
+import type { ArtworkTaxonomyCatalogResponse } from '../types';
+import { AdminNotReadyError } from '../utils/adminAuth';
+import { logAdminFetchError } from '../utils/adminFetch';
+import {
+  createAsyncLoadState,
+  loadError,
+  loadSuccess,
+  startLoading,
+  type AsyncLoadState,
+} from '../utils/asyncLoadState';
+import { usePageSeo } from '../hooks/usePageSeo';
+import { buildAdminSeo } from '../utils/seoConfig';
+import { useAdminBrand } from '../context/AdminBrandContext';
+import AdminBrandSwitcher from '../components/AdminBrandSwitcher';
+import AdminUsersPanel from '../components/AdminUsersPanel';
+import AdminBrandSettingsPanel from '../components/AdminBrandSettingsPanel';
+import { resolvePublicAssetUrl } from '../utils/publicAssetUrl';
+
+const PreviewDataStatusLine: React.FC<{
+  label: string;
+  ok: boolean;
+  okText: string;
+  warnText: string;
+}> = ({ label, ok, okText, warnText }) => (
+  <div className="flex items-start gap-2 text-xs leading-5">
+    <span className="text-gray-500 w-14 shrink-0">{label}</span>
+    <span className={ok ? 'text-emerald-400' : 'text-amber-300'}>{ok ? okText : warnText}</span>
+  </div>
+);
 
 const AdminDashboard: React.FC = () => {
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'artworks' | 'appointments' | 'customers'>('artworks');
+  usePageSeo(buildAdminSeo());
+  const {
+    status: adminBrandStatus,
+    currentAdminBrand,
+    isSuperAdmin,
+    isBrandAdmin,
+    brandRevision,
+  } = useAdminBrand();
+  const [activeTab, setActiveTab] = useState<'artworks' | 'appointments' | 'customers' | 'lineart' | 'removebg' | 'analytics' | 'line_messaging' | 'brand_settings' | 'admin_users'>('artworks');
   const [artworks, setArtworks] = useState<Artwork[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
@@ -23,15 +103,39 @@ const AdminDashboard: React.FC = () => {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isCatManagerOpen, setIsCatManagerOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [taxonomyCatalog, setTaxonomyCatalog] = useState<ArtworkTaxonomyCatalogResponse>(emptyTaxonomyCatalog());
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
 
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('');
   const [price, setPrice] = useState('');
   const [specialPrice, setSpecialPrice] = useState(''); 
+  const [heightCm, setHeightCm] = useState('');
+  const [sizeNote, setSizeNote] = useState('');
+  const [selectedPlacementKeys, setSelectedPlacementKeys] = useState<ArtworkPlacementKey[]>([]);
+  const [legacyPlacements, setLegacyPlacements] = useState<string[]>([]);
+  const [previewDataFilter, setPreviewDataFilter] = useState<ArtworkPreviewDataFilter>('all');
   const [imageUrl, setImageUrl] = useState(''); 
+  const [imageUrls, setImageUrls] = useState<string[]>([]); // 最多3張圖片
   const [pngUrl, setPngUrl] = useState(''); // 去背 PNG 檔案
+  const [autoGeneratePng, setAutoGeneratePng] = useState(true);
+  const [manualPngUploaded, setManualPngUploaded] = useState(false);
+  const [regeneratePngOnSave, setRegeneratePngOnSave] = useState(false);
+  const [coverImageFile, setCoverImageFile] = useState<File | null>(null);
+  const [originalCoverImageUrl, setOriginalCoverImageUrl] = useState('');
+  const [removeBgPreset, setRemoveBgPreset] = useState<RemoveBgPreset>(SYSTEM_DEFAULT_REMOVE_BG_PRESET);
+  const [hasCustomRemoveBgPreset, setHasCustomRemoveBgPreset] = useState(false);
+  const [isSubmittingArtwork, setIsSubmittingArtwork] = useState(false);
+  const [artworkSubmitStatus, setArtworkSubmitStatus] = useState('');
+  const [isRegeneratingPng, setIsRegeneratingPng] = useState(false);
+  const [autoPngPreviewUrl, setAutoPngPreviewUrl] = useState<string | null>(null);
+  const [isPreviewingAutoPng, setIsPreviewingAutoPng] = useState(false);
+  const [autoPngColorNote, setAutoPngColorNote] = useState('');
+  const [isBatchPngOpen, setIsBatchPngOpen] = useState(false);
+  const [isTaxonomyMigrationOpen, setIsTaxonomyMigrationOpen] = useState(false);
   const [description, setDescription] = useState('');
   const [tags, setTags] = useState<string[]>([]);
+  const [isNewArrival, setIsNewArrival] = useState(false);
   
   const [aiLoading, setAiLoading] = useState(false);
   const [newCategoryInput, setNewCategoryInput] = useState('');
@@ -40,6 +144,16 @@ const AdminDashboard: React.FC = () => {
   const [isDepositModalOpen, setIsDepositModalOpen] = useState(false);
   const [depositAmount, setDepositAmount] = useState('');
   const [confirmingApt, setConfirmingApt] = useState<Appointment | null>(null);
+
+  // --- Receive Deposit / Complete Order Modals ---
+  const [isReceiveDepositModalOpen, setIsReceiveDepositModalOpen] = useState(false);
+  const [receiveDepositApt, setReceiveDepositApt] = useState<Appointment | null>(null);
+  const [isCompleteModalOpen, setIsCompleteModalOpen] = useState(false);
+  const [completingApt, setCompletingApt] = useState<Appointment | null>(null);
+
+  // --- Appointment List Filter & Menu ---
+  const [appointmentFilter, setAppointmentFilter] = useState<AdminAppointmentFilter>('all');
+  const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
 
   // --- Appointment Edit State ---
   const [isAptModalOpen, setIsAptModalOpen] = useState(false);
@@ -75,32 +189,197 @@ const AdminDashboard: React.FC = () => {
   const [uploadingAptId, setUploadingAptId] = useState<string | null>(null);
   const [customImageUrl, setCustomImageUrl] = useState('');
 
+  // --- LINE Member Tags State ---
+  const [memberTags, setMemberTags] = useState<MemberTag[]>([]);
+  const [tagModalCustomer, setTagModalCustomer] = useState<any | null>(null);
+  const [customerTagMap, setCustomerTagMap] = useState<Record<string, MemberTag[]>>({});
+  const [favoriteViewerCustomer, setFavoriteViewerCustomer] = useState<any | null>(null);
+
+  // --- Customer Search State ---
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [isLoadingCustomerTags, setIsLoadingCustomerTags] = useState(false);
+  const customerTagsLoadingRef = useRef(false);
+  const coreLoadRequestIdRef = useRef(0);
+  const memberTagsLoadRequestIdRef = useRef(0);
+
+  const [coreDataLoad, setCoreDataLoad] = useState<AsyncLoadState<null>>(createAsyncLoadState(null));
+  const [customersLoad, setCustomersLoad] = useState<AsyncLoadState<null>>(createAsyncLoadState(null));
+  const [appointmentsLoad, setAppointmentsLoad] = useState<AsyncLoadState<null>>(createAsyncLoadState(null));
+  const [memberTagsLoad, setMemberTagsLoad] = useState<AsyncLoadState<null>>(createAsyncLoadState(null));
+
   useEffect(() => {
-    loadData();
+    if (!hasAdminToken()) {
+      setCoreDataLoad((prev) => loadError(prev, 'Admin 登入尚未就緒，請重新登入'));
+      return;
+    }
+    if (adminBrandStatus !== 'ready') return;
+
+    setArtworks([]);
+    setStats({});
+    setAppointments([]);
+    setCustomers([]);
+    setTaxonomyCatalog(emptyTaxonomyCatalog());
+    setCategories([]);
+    setSelectedTagIds([]);
+    setIsFormOpen(false);
+    setEditingId(null);
+    coreLoadRequestIdRef.current++;
+
+    loadCoreData();
     loadCategories();
+    loadTaxonomyCatalog();
+  }, [adminBrandStatus, brandRevision]);
+
+  useEffect(() => {
+    if (isBrandAdmin && !['artworks', 'appointments'].includes(activeTab)) {
+      setActiveTab('artworks');
+    }
+  }, [isBrandAdmin, activeTab]);
+
+  useEffect(() => {
+    if ((activeTab === 'customers' || activeTab === 'line_messaging') && hasAdminToken()) {
+      loadMemberTags();
+    }
   }, [activeTab]);
 
-  const loadData = async () => {
+  const loadTaxonomyCatalog = async () => {
     try {
-        const [data, artworkStats, apts, users] = await Promise.all([
-            db.getArtworks(),
-            db.getArtworkStats(),
-            db.getAppointments(),
-            db.getAllUsers()
-        ]);
-        setArtworks(data); // Will be sorted by sortArtworks function
-        setStats(artworkStats);
-        
-        // Filter appointments: show all non-OPEN or OPEN slots that have data (rare)
-        const activeApts = apts
-            .filter(a => a.status !== 'OPEN') 
-            .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-        setAppointments(activeApts);
-        
-        setCustomers(users);
-    } catch (e: any) {
-        console.error("Error loading admin data", e);
+      const data = await db.getArtworkTags({ admin: true });
+      setTaxonomyCatalog(data);
+    } catch (e) {
+      console.error('Failed to load taxonomy tags', e);
     }
+  };
+
+  const loadCoreData = async () => {
+    if (!hasAdminToken()) {
+      setCoreDataLoad((prev) => loadError(prev, 'Admin 登入尚未就緒，請重新登入'));
+      return;
+    }
+
+    const requestId = ++coreLoadRequestIdRef.current;
+    setCoreDataLoad((prev) => startLoading(prev));
+
+    if (isBrandAdmin) {
+      setAppointmentsLoad((prev) => startLoading(prev));
+      try {
+        const [artRes, aptRes] = await Promise.allSettled([
+          db.getAdminArtworks(),
+          db.getAdminAppointments(),
+        ]);
+        if (requestId !== coreLoadRequestIdRef.current) return;
+
+        if (artRes.status === 'fulfilled') {
+          setArtworks(artRes.value);
+          setStats({});
+          setCoreDataLoad((prev) => loadSuccess(prev, null));
+        } else {
+          logAdminFetchError('getAdminArtworks', artRes.reason);
+          setCoreDataLoad((prev) => loadError(prev, '作品資料載入失敗'));
+        }
+
+        if (aptRes.status === 'fulfilled') {
+          const activeApts = aptRes.value
+            .filter((a) => a.status !== 'OPEN')
+            .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          setAppointments(activeApts);
+          setAppointmentsLoad((prev) => loadSuccess(prev, null));
+        } else {
+          setAppointmentsLoad((prev) => loadError(prev, '預約資料載入失敗'));
+          logAdminFetchError('getAdminAppointments', aptRes.reason);
+        }
+      } catch (e) {
+        if (requestId !== coreLoadRequestIdRef.current) return;
+        logAdminFetchError('loadCoreData', e);
+        setCoreDataLoad((prev) => loadError(prev, '資料載入失敗'));
+      }
+      return;
+    }
+
+    setCustomersLoad((prev) => startLoading(prev));
+    setAppointmentsLoad((prev) => startLoading(prev));
+
+    const [artRes, statsRes, aptRes, usersRes] = await Promise.allSettled([
+      db.getAdminArtworks(),
+      db.getArtworkStats(),
+      db.getAdminAppointments(),
+      db.getAllUsers(),
+    ]);
+
+    if (requestId !== coreLoadRequestIdRef.current) return;
+
+    const failedLabels: string[] = [];
+    let anySuccess = false;
+
+    if (artRes.status === 'fulfilled') {
+      setArtworks(artRes.value);
+      anySuccess = true;
+    } else {
+      failedLabels.push('作品');
+      logAdminFetchError('getAdminArtworks', artRes.reason);
+    }
+
+    if (statsRes.status === 'fulfilled') {
+      setStats(statsRes.value);
+      anySuccess = true;
+    } else {
+      failedLabels.push('作品統計');
+      logAdminFetchError('getArtworkStats', statsRes.reason);
+    }
+
+    if (aptRes.status === 'fulfilled') {
+      const activeApts = aptRes.value
+        .filter((a) => a.status !== 'OPEN')
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      setAppointments(activeApts);
+      setAppointmentsLoad((prev) => loadSuccess(prev, null));
+      anySuccess = true;
+    } else {
+      failedLabels.push('預約');
+      setAppointmentsLoad((prev) => loadError(prev, '預約資料載入失敗'));
+      logAdminFetchError('getAdminAppointments', aptRes.reason);
+    }
+
+    if (usersRes.status === 'fulfilled') {
+      setCustomers(usersRes.value);
+      setCustomersLoad((prev) => loadSuccess(prev, null));
+      if (activeTab === 'customers') {
+        loadCustomerTags(usersRes.value);
+      }
+      anySuccess = true;
+    } else {
+      failedLabels.push('顧客');
+      setCustomersLoad((prev) => loadError(prev, '顧客資料載入失敗'));
+      logAdminFetchError('getAllUsers', usersRes.reason);
+    }
+
+    if (anySuccess && failedLabels.length === 0) {
+      setCoreDataLoad((prev) => loadSuccess(prev, null));
+    } else if (anySuccess) {
+      setCoreDataLoad((prev) => ({
+        ...prev,
+        status: 'error',
+        hasLoadedOnce: true,
+        error: `部分資料載入失敗：${failedLabels.join('、')}。已保留上一份成功資料。`,
+      }));
+    } else {
+      const authNotReady =
+        [artRes, aptRes, usersRes].some(
+          (res) => res.status === 'rejected' && res.reason instanceof AdminNotReadyError
+        );
+      const message = authNotReady
+          ? 'Admin 登入尚未就緒，請重新登入'
+          : '資料載入失敗，請稍後再試';
+      setCoreDataLoad((prev) => loadError(prev, message));
+    }
+  };
+
+  /** 相容既有呼叫點：重新載入核心 Admin 資料 */
+  const loadData = loadCoreData;
+
+  const renderCountLabel = (count: number, loadState: AsyncLoadState<null>) => {
+    if (loadState.status === 'loading' && !loadState.hasLoadedOnce) return '…';
+    return String(count);
   };
 
   // 排序作品
@@ -131,10 +410,13 @@ const AdminDashboard: React.FC = () => {
 
   // 取得已排序的作品列表
   const sortedArtworks = sortArtworks(artworks, sortBy, sortOrder);
+  const filteredArtworks = sortedArtworks.filter((art) => matchesArtworkPreviewFilter(art, previewDataFilter));
+  const filteredAppointments = filterAppointments(appointments, appointmentFilter);
+  const pendingActionCount = countPendingActionAppointments(appointments);
 
   const loadCategories = async () => {
     try {
-        const cats = await db.getCategories();
+        const cats = await db.getCategories({ admin: true });
         setCategories(cats);
         if (!category && cats.length > 0) {
             const defaultCat = cats.find(c => c !== 'All') || cats[0];
@@ -145,19 +427,142 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
-  // --- Artwork Handlers ---
+  // --- Member Tags Handlers ---
+
+  const loadMemberTags = async () => {
+    if (!hasAdminToken()) return;
+    const requestId = ++memberTagsLoadRequestIdRef.current;
+    setMemberTagsLoad((prev) => startLoading(prev));
+    try {
+      const tags = await db.getTags();
+      if (requestId !== memberTagsLoadRequestIdRef.current) return;
+      setMemberTags(tags);
+      setMemberTagsLoad((prev) => loadSuccess(prev, null));
+    } catch (e) {
+      if (requestId !== memberTagsLoadRequestIdRef.current) return;
+      setMemberTagsLoad((prev) => loadError(prev, '標籤載入失敗'));
+      logAdminFetchError('getTags', e);
+    }
+  };
+
+  const loadCustomerTags = async (users: any[]) => {
+    if (customerTagsLoadingRef.current) return;
+    try {
+      customerTagsLoadingRef.current = true;
+      setIsLoadingCustomerTags(true);
+      const map: Record<string, MemberTag[]> = {};
+      const tags = await db.getTags();
+      const tagById = Object.fromEntries(tags.map(t => [t.id, t]));
+
+      // Avoid burst traffic that can trigger Cloudflare rate/WAF checks.
+      const batchSize = 6;
+      for (let i = 0; i < users.length; i += batchSize) {
+        const batch = users.slice(i, i + batchSize);
+        await Promise.all(
+          batch.map(async u => {
+            const tagIds = await db.getUserTags(u.id);
+            map[u.id] = tagIds.map(id => tagById[id]).filter(Boolean);
+          })
+        );
+        if (i + batchSize < users.length) {
+          await new Promise(resolve => setTimeout(resolve, 150));
+        }
+      }
+
+      setCustomerTagMap(map);
+    } catch (e) {
+      console.error('Failed to load customer tags', e);
+    } finally {
+      customerTagsLoadingRef.current = false;
+      setIsLoadingCustomerTags(false);
+    }
+  };
+
+  const loadRemoveBgPreset = async () => {
+    try {
+      const { value } = await db.getAdminSetting<RemoveBgPreset>(REMOVE_BG_PRESET_SETTING_KEY);
+      const normalized = normalizeRemoveBgPreset(value);
+      if (normalized) {
+        setRemoveBgPreset(normalized);
+        setHasCustomRemoveBgPreset(true);
+        return;
+      }
+    } catch (e) {
+      console.error('Failed to load remove bg preset', e);
+    }
+    setRemoveBgPreset(SYSTEM_DEFAULT_REMOVE_BG_PRESET);
+    setHasCustomRemoveBgPreset(false);
+  };
+
+  const clearAutoPngPreview = () => {
+    setAutoPngPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+  };
+
+  const getCoverImageSource = (): File | string | null => {
+    if (coverImageFile) return coverImageFile;
+    const coverUrl = imageUrls[0] || imageUrl;
+    if (!coverUrl) return null;
+    if (typeof coverUrl === 'string') {
+      return resolvePublicAssetUrl(coverUrl, currentAdminBrand) || coverUrl;
+    }
+    return coverUrl;
+  };
+
+  const describeAutoPngResult = (result: TransparentPngResult) => {
+    setAutoPngColorNote(
+      result.colorDetected
+        ? '偵測到彩色作品，已自動改用「標準去背」保留原色。'
+        : ''
+    );
+  };
+
+  const generateAndUploadPngFromCover = async (): Promise<string> => {
+    const source = getCoverImageSource();
+    if (!source) throw new Error('缺少主圖');
+    const result = await generateTransparentPng(source, removeBgPreset);
+    describeAutoPngResult(result);
+    const pngFile = new File([result.blob], 'generated-preview.png', { type: 'image/png' });
+    const compressed = await compressPngForUpload(pngFile);
+    return db.uploadPngFile(compressed.blob);
+  };
 
   const handleEditArtwork = (art: Artwork) => {
+    setAutoPngColorNote('');
     setEditingId(art.id);
     setTitle(art.title);
     setCategory(art.category);
     setPrice(art.price ? art.price.toString() : '');
     setSpecialPrice(art.specialPrice ? art.specialPrice.toString() : '');
+    setHeightCm(typeof art.heightCm === 'number' ? art.heightCm.toString() : '');
+    setSizeNote(art.sizeNote || '');
+    const placementState = getArtworkPlacementState(art);
+    setSelectedPlacementKeys(normalizeArtworkPlacementKeys(placementState.keys));
+    setLegacyPlacements(placementState.legacy);
     setImageUrl(art.imageUrl);
+    const existingUrls = art.imageUrls && art.imageUrls.length > 0 ? art.imageUrls : [art.imageUrl];
+    setImageUrls(existingUrls.filter(Boolean));
     setPngUrl(art.pngUrl || '');
     setDescription(art.description);
     setTags(art.tags);
+    setIsNewArrival(Boolean(art.isNew));
+    setSelectedTagIds(Array.isArray(art.tagIds) ? art.tagIds : (art.taxonomyTags?.map((tag) => tag.id) ?? []));
+    setAutoGeneratePng(true);
+    setManualPngUploaded(false);
+    setRegeneratePngOnSave(false);
+    setCoverImageFile(null);
+    setOriginalCoverImageUrl(art.imageUrl);
+    clearAutoPngPreview();
+    if (isSuperAdmin) void loadRemoveBgPreset();
     setIsFormOpen(true);
+  };
+
+  const togglePlacementKey = (key: ArtworkPlacementKey) => {
+    setSelectedPlacementKeys((prev) =>
+      prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]
+    );
   };
 
   // 圖片壓縮函數 - 解決 iPad/手機大圖片上傳問題
@@ -200,7 +605,7 @@ const AdminDashboard: React.FC = () => {
     });
   };
 
-  // PNG 壓縮函數 - 保留透明度
+  // PNG 壓縮函數 - 保留透明度（一般作品圖仍使用）
   const compressPng = (file: File, maxWidth: number = 800): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -283,23 +688,53 @@ const AdminDashboard: React.FC = () => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       
-      // 🔒 驗證檔案
       const validation = validateImageFile(file, ALLOWED_IMAGE_TYPES);
       if (!validation.valid) {
         alert(`⚠️ 上傳失敗：${validation.error}`);
-        e.target.value = ''; // 清除選擇
+        e.target.value = '';
+        return;
+      }
+
+      if (imageUrls.length >= 3) {
+        alert('⚠️ 最多只能上傳 3 張圖片');
+        e.target.value = '';
         return;
       }
       
       try {
-        // 壓縮圖片後再設定
         const compressed = await compressImage(file, 1200, 0.8);
-        setImageUrl(compressed);
+        const url = await db.uploadImage(compressed, false);
+        const isNewCover = imageUrls.length === 0;
+        const newUrls = [...imageUrls, url];
+        setImageUrls(newUrls);
+        if (newUrls.length === 1) setImageUrl(url);
+
+        if (isNewCover) {
+          setCoverImageFile(file);
+          clearAutoPngPreview();
+          if (editingId && originalCoverImageUrl && url !== originalCoverImageUrl) {
+            if (autoGeneratePng && !manualPngUploaded) {
+              const ok = window.confirm('主圖已變更，是否重新產生透明 PNG？');
+              setRegeneratePngOnSave(ok);
+            }
+          }
+        }
       } catch (error) {
-        console.error('Image compression failed:', error);
-        alert('⚠️ 圖片處理失敗，請確認是有效的圖片檔案。');
+        console.error('Image upload failed:', error);
+        alert('⚠️ 圖片上傳失敗，請確認網路連線後再試。');
         e.target.value = '';
       }
+    }
+  };
+
+  const removeImage = (index: number) => {
+    const newUrls = imageUrls.filter((_, i) => i !== index);
+    setImageUrls(newUrls);
+    setImageUrl(newUrls[0] || '');
+    if (index === 0) {
+      setCoverImageFile(null);
+      clearAutoPngPreview();
+      setRegeneratePngOnSave(false);
     }
   };
 
@@ -316,12 +751,22 @@ const AdminDashboard: React.FC = () => {
       }
       
       try {
-        // 壓縮 PNG 並保留透明度
-        const compressed = await compressPng(file, 800);
-        setPngUrl(compressed);
+        const compressed = await compressPngForUpload(file);
+        const url = await db.uploadPngFile(compressed.blob);
+        setPngUrl(url);
+        setManualPngUploaded(true);
+        setRegeneratePngOnSave(false);
+        clearAutoPngPreview();
       } catch (error) {
-        console.error('PNG compression failed:', error);
-        alert('⚠️ PNG 處理失敗，請確認是有效的 PNG 圖片。');
+        console.error('PNG upload failed:', error);
+        const message = error instanceof Error ? error.message : '';
+        if (message === 'REQUEST_ENTITY_TOO_LARGE') {
+          alert('⚠️ PNG 上傳失敗：檔案超過伺服器允許的請求大小（413）。\n\n系統已自動壓縮；若仍失敗，請先縮小原圖尺寸或簡化 PNG 後再試。');
+        } else if (message.includes('超過伺服器允許大小')) {
+          alert(`⚠️ ${message}`);
+        } else {
+          alert('⚠️ PNG 上傳失敗，請確認網路連線後再試。');
+        }
         e.target.value = '';
       }
     }
@@ -347,33 +792,126 @@ const AdminDashboard: React.FC = () => {
     return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
   };
 
+  const handlePreviewAutoPng = async () => {
+    const source = getCoverImageSource();
+    if (!source) {
+      alert('請先上傳主圖');
+      return;
+    }
+    setIsPreviewingAutoPng(true);
+    try {
+      const result = await generateTransparentPng(source, removeBgPreset);
+      describeAutoPngResult(result);
+      clearAutoPngPreview();
+      setAutoPngPreviewUrl(URL.createObjectURL(result.blob));
+    } catch (error) {
+      console.error(error);
+      alert('預覽產生失敗，請稍後再試。');
+    } finally {
+      setIsPreviewingAutoPng(false);
+    }
+  };
+
+  const handleRegeneratePng = async () => {
+    if (!window.confirm('確定要使用目前預設重新產生透明 PNG？這會覆蓋現有 PNG。')) return;
+    setIsRegeneratingPng(true);
+    setArtworkSubmitStatus('正在產生透明 PNG...');
+    try {
+      const url = await generateAndUploadPngFromCover();
+      setPngUrl(url);
+      setManualPngUploaded(false);
+      setRegeneratePngOnSave(false);
+      clearAutoPngPreview();
+    } catch (error) {
+      console.error(error);
+      alert('透明 PNG 產生失敗，請稍後再試。');
+    } finally {
+      setIsRegeneratingPng(false);
+      setArtworkSubmitStatus('');
+    }
+  };
+
   const handleSubmitArtwork = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title || !imageUrl) return;
+    const effectiveImageUrl = imageUrls[0] || imageUrl;
+    if (!title || !effectiveImageUrl || isSubmittingArtwork) return;
+    const parsedHeightCm = heightCm.trim() ? Number(heightCm) : undefined;
+    if (parsedHeightCm !== undefined && (!Number.isFinite(parsedHeightCm) || parsedHeightCm <= 0)) {
+      alert('建議長度必須大於 0');
+      return;
+    }
+    const existingArtwork = editingId ? artworks.find(a => a.id === editingId) : undefined;
+    const parsedWidthCm = existingArtwork?.widthCm;
 
-    const newArtwork: Artwork = {
-      id: editingId || Date.now().toString(),
-      title,
-      description: description || 'No description provided.',
-      imageUrl: imageUrl,
-      pngUrl: pngUrl || undefined, // 去背 PNG 檔案
-      category,
-      price: price ? Number(price) : undefined,
-      specialPrice: specialPrice ? Number(specialPrice) : undefined,
-      status: editingId ? artworks.find(a => a.id === editingId)?.status || ArtworkStatus.AVAILABLE : ArtworkStatus.AVAILABLE,
-      createdAt: editingId ? (artworks.find(a => a.id === editingId)?.createdAt || getMysqlDateTime()) : getMysqlDateTime(),
-      tags: tags
-    };
+    const legacyCategory = deriveLegacyCategoryFromTags(
+      selectedTagIds,
+      taxonomyCatalog,
+      existingArtwork?.category || category || '未分類'
+    );
+
+    const shouldAutoGeneratePng =
+      autoGeneratePng &&
+      !manualPngUploaded &&
+      Boolean(getCoverImageSource()) &&
+      (!editingId || regeneratePngOnSave);
+
+    let finalPngUrl = pngUrl;
+    let pngGenerationFailed = false;
+
+    setIsSubmittingArtwork(true);
+    setArtworkSubmitStatus('正在處理圖片...');
 
     try {
-        await db.saveArtwork(newArtwork);
-        setIsFormOpen(false);
-        setEditingId(null);
-        resetArtworkForm();
-        loadData();
+      if (shouldAutoGeneratePng) {
+        setArtworkSubmitStatus('正在產生透明 PNG...');
+        try {
+          finalPngUrl = await generateAndUploadPngFromCover();
+        } catch (pngError) {
+          pngGenerationFailed = true;
+          console.error('Auto PNG generation failed:', pngError);
+          finalPngUrl = pngUrl;
+        }
+      }
+
+      setArtworkSubmitStatus('正在儲存作品...');
+
+      const newArtwork: Artwork = {
+        id: editingId || Date.now().toString(),
+        title,
+        description: description || 'No description provided.',
+        imageUrl: effectiveImageUrl,
+        imageUrls: imageUrls.length > 0 ? imageUrls : [effectiveImageUrl],
+        pngUrl: finalPngUrl || undefined,
+        category: legacyCategory,
+        price: price ? Number(price) : undefined,
+        specialPrice: specialPrice ? Number(specialPrice) : undefined,
+        widthCm: parsedWidthCm,
+        heightCm: parsedHeightCm,
+        sizeNote: sizeNote.trim() || undefined,
+        recommendedPlacements: selectedPlacementKeys,
+        recommendedPlacementKeys: selectedPlacementKeys,
+        status: editingId ? artworks.find(a => a.id === editingId)?.status || ArtworkStatus.AVAILABLE : ArtworkStatus.AVAILABLE,
+        createdAt: editingId ? (artworks.find(a => a.id === editingId)?.createdAt || getMysqlDateTime()) : getMysqlDateTime(),
+        tags: tags,
+        tagIds: selectedTagIds,
+        isNew: isNewArrival,
+      };
+
+      await db.saveArtwork(newArtwork);
+      setIsFormOpen(false);
+      setEditingId(null);
+      resetArtworkForm();
+      loadData();
+
+      if (pngGenerationFailed) {
+        alert('作品已建立，但透明 PNG 產生失敗，可稍後重新產生。');
+      }
     } catch (error: any) {
         console.error(error);
         alert(`無法儲存作品。\n\n錯誤: ${error.message}`);
+    } finally {
+      setIsSubmittingArtwork(false);
+      setArtworkSubmitStatus('');
     }
   };
 
@@ -421,13 +959,30 @@ const AdminDashboard: React.FC = () => {
   };
 
   const resetArtworkForm = () => {
+    setAutoPngColorNote('');
     setTitle('');
     setDescription('');
     setPrice('');
     setSpecialPrice('');
+    setHeightCm('');
+    setSizeNote('');
+    setSelectedPlacementKeys([]);
+    setLegacyPlacements([]);
     setTags([]);
     setImageUrl('');
+    setImageUrls([]);
     setPngUrl('');
+    setAutoGeneratePng(true);
+    setManualPngUploaded(false);
+    setRegeneratePngOnSave(false);
+    setCoverImageFile(null);
+    setOriginalCoverImageUrl('');
+    clearAutoPngPreview();
+    setArtworkSubmitStatus('');
+    setIsSubmittingArtwork(false);
+    setIsRegeneratingPng(false);
+    setSelectedTagIds([]);
+    setIsNewArrival(false);
     setEditingId(null);
     if (categories.length > 0) {
         const defaultCat = categories.find(c => c !== 'All') || categories[0];
@@ -444,7 +999,7 @@ const AdminDashboard: React.FC = () => {
       setIsDepositModalOpen(true);
   };
 
-  // 確認訂金（填寫訂金金額後）
+  // 設定訂金（填寫訂金金額後 → WAITING_PAYMENT）
   const confirmDeposit = async () => {
       if (!confirmingApt || !depositAmount) {
           alert('請輸入訂金金額');
@@ -493,30 +1048,62 @@ ___《刺青定金規範》___
       alert('訂金訊息已複製！');
   };
 
-  // 確認已收到訂金
-  const confirmReceivedDeposit = async (apt: Appointment) => {
-      if (window.confirm(`確認已收到 ${apt.customerName} 的訂金？`)) {
-          try {
-              const updatedApt: Appointment = {
-                  ...apt,
-                  status: 'SIGNING'
-              };
-              await db.saveAppointment(updatedApt);
-              loadData();
-          } catch (error: any) {
-              alert(`確認失敗: ${error.message}`);
-          }
+  const openReceiveDepositModal = (apt: Appointment) => {
+      setReceiveDepositApt(apt);
+      setIsReceiveDepositModalOpen(true);
+  };
+
+  const confirmReceivedDeposit = async () => {
+      if (!receiveDepositApt) return;
+      try {
+          const updatedApt: Appointment = {
+              ...receiveDepositApt,
+              status: 'SIGNING',
+          };
+          await db.saveAppointment(updatedApt);
+          setAppointments((prev) =>
+            prev.map((a) => (a.id === updatedApt.id ? { ...a, status: 'SIGNING' } : a))
+          );
+          setIsReceiveDepositModalOpen(false);
+          setReceiveDepositApt(null);
+          loadData();
+      } catch (error: any) {
+          alert(`確認失敗: ${error.message}`);
+      }
+  };
+
+  const openCompleteModal = (apt: Appointment) => {
+      setCompletingApt(apt);
+      setIsCompleteModalOpen(true);
+  };
+
+  const confirmCompleteOrder = async () => {
+      if (!completingApt) return;
+      try {
+          await db.completeAppointment(completingApt.id);
+          setAppointments((prev) =>
+            prev.map((a) => (a.id === completingApt.id ? { ...a, status: 'COMPLETED' } : a))
+          );
+          setIsCompleteModalOpen(false);
+          setCompletingApt(null);
+          loadData();
+      } catch (error: any) {
+          alert(`完成訂單失敗: ${error.message}`);
       }
   };
 
   // 複製同意書訊息
-  const copyConsentMessage = (apt: Appointment) => {
-      const consentLink = `${window.location.origin}/#/consent/${apt.id}`;
+  const copyConsentMessage = async (apt: Appointment) => {
+      const links = await db.getAdminAppointmentPublicLinks(apt.id);
+      if (!links?.consentUrl) {
+        alert('無法取得顧客同意書連結，請稍後再試。');
+        return;
+      }
       const message = `您好，已經收到您的訂金，下列為此次刺青的同意書，
 
 請您確認內容沒問題並且線上簽名並送出即可，感謝!
 
-${consentLink}`;
+${links.consentUrl}`;
       
       navigator.clipboard.writeText(message);
       alert('同意書訊息已複製！');
@@ -559,7 +1146,7 @@ ${consentLink}`;
       if (window.confirm('確定要取消此預約並釋出時段嗎？')) {
           try {
             await db.cancelAppointment(id);
-            loadData();
+            setAppointments((prev) => prev.filter((a) => a.id !== id));
           } catch (error: any) {
             alert(`取消失敗: ${error.message}`);
           }
@@ -741,18 +1328,23 @@ ${consentLink}`;
   };
 
   // 複製同意書連結
-  const copyConsentLink = (aptId: string) => {
-      // 使用當前網址自動生成連結（支援新網址 https://inkflow.work/）
-      // HashRouter 使用 # 作為路由前綴
-      const link = `${window.location.origin}/#/consent/${aptId}`;
-      navigator.clipboard.writeText(link);
+  const copyConsentLink = async (aptId: string) => {
+      const links = await db.getAdminAppointmentPublicLinks(aptId);
+      if (!links?.consentUrl) {
+        alert('無法取得顧客同意書連結，請稍後再試。');
+        return;
+      }
+      navigator.clipboard.writeText(links.consentUrl);
       alert('同意書連結已複製！');
   };
 
-  // 複製訂單查看連結
-  const copyAppointmentLink = (aptId: string) => {
-      const link = `${window.location.origin}/#/appointment/${aptId}`;
-      navigator.clipboard.writeText(link);
+  const copyAppointmentLink = async (aptId: string) => {
+      const links = await db.getAdminAppointmentPublicLinks(aptId);
+      if (!links?.appointmentUrl) {
+        alert('無法取得顧客訂單連結，請稍後再試。');
+        return;
+      }
+      navigator.clipboard.writeText(links.appointmentUrl);
       alert('訂單查看連結已複製！');
   };
 
@@ -787,12 +1379,104 @@ ${consentLink}`;
       }
   };
 
+  const parseFavoriteSearch = (keyword: string): { operator: '>' | '>=' | '<' | '<=' | '='; value: number } | null => {
+    const trimmed = keyword.trim();
+    if (!trimmed) return null;
+
+    const normalized = trimmed
+      .toLowerCase()
+      .replace(/\s+/g, '')
+      .replace(/^收藏數量|^收藏數|^收藏|^favoritecount|^favorites|^favorite/, '');
+
+    const matched = normalized.match(/^(>=|<=|>|<|=)(\d+)$/);
+    if (!matched) return null;
+
+    return {
+      operator: matched[1] as '>' | '>=' | '<' | '<=' | '=',
+      value: Number(matched[2]),
+    };
+  };
+
+  const matchFavoriteCondition = (favoriteCount: number, operator: '>' | '>=' | '<' | '<=' | '=', value: number): boolean => {
+    switch (operator) {
+      case '>':
+        return favoriteCount > value;
+      case '>=':
+        return favoriteCount >= value;
+      case '<':
+        return favoriteCount < value;
+      case '<=':
+        return favoriteCount <= value;
+      case '=':
+        return favoriteCount === value;
+      default:
+        return false;
+    }
+  };
+
+  const filteredCustomers = (() => {
+    const q = customerSearch.trim();
+    if (!q) return customers;
+
+    const favoriteQuery = parseFavoriteSearch(q);
+    if (favoriteQuery) {
+      return customers.filter(c =>
+        matchFavoriteCondition(Number(c.favoriteCount || 0), favoriteQuery.operator, favoriteQuery.value)
+      );
+    }
+
+    const lowerQ = q.toLowerCase();
+    return customers.filter(c =>
+      c.name?.toLowerCase().includes(lowerQ) ||
+      c.id?.toLowerCase().includes(lowerQ) ||
+      (customerTagMap[c.id] || []).some((t: MemberTag) => t.name.toLowerCase().includes(lowerQ))
+    );
+  })();
+
+  const getCustomerFavoriteIds = (customer: any): string[] => {
+    if (Array.isArray(customer?.favorites)) return customer.favorites;
+
+    if (typeof customer?.favorites === 'string') {
+      try {
+        const parsed = JSON.parse(customer.favorites);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+
+    return [];
+  };
+
+  const favoriteViewerIds = favoriteViewerCustomer ? getCustomerFavoriteIds(favoriteViewerCustomer) : [];
+  const favoriteViewerArtworks = favoriteViewerIds
+    .map((artId: string) => artworks.find((art) => art.id === artId))
+    .filter(Boolean) as Artwork[];
+  const missingFavoriteCount = Math.max(0, favoriteViewerIds.length - favoriteViewerArtworks.length);
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold text-white">管理後台</h1>
-        
-        {activeTab === 'artworks' && (
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between mb-8">
+        <div>
+          <h1 className="text-3xl font-bold text-white">管理後台</h1>
+          {currentAdminBrand && (
+            <p className="text-sm text-gray-400 mt-1">
+              {isBrandAdmin ? '品牌' : '目前操作'}：<span className="text-primary">{currentAdminBrand.name}</span>
+            </p>
+          )}
+        </div>
+
+        <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+          <AdminBrandSwitcher />
+          {isSuperAdmin && (
+            <Link
+              to="/aftercare?adminEdit=1"
+              className="bg-gray-800 text-gray-300 px-4 py-2 rounded-lg font-bold flex items-center hover:bg-gray-700 hover:text-white transition-colors whitespace-nowrap"
+            >
+              <ShieldCheck size={18} className="mr-2" /> 編輯保養須知
+            </Link>
+          )}
+          {activeTab === 'artworks' && (
             <div className="flex gap-2">
                 <button 
                 onClick={() => setIsCatManagerOpen(true)}
@@ -800,42 +1484,130 @@ ${consentLink}`;
                 >
                 <Settings size={20} className="mr-2" /> 管理分類
                 </button>
+                {isSuperAdmin && (
+                  <button
+                  onClick={() => { void loadRemoveBgPreset(); setIsBatchPngOpen(true); }}
+                  className="bg-gray-800 text-gray-300 px-4 py-2 rounded-lg font-bold flex items-center hover:bg-gray-700 transition-colors whitespace-nowrap"
+                  >
+                  <Layers size={20} className="mr-2" /> 批次重新產生 PNG
+                  </button>
+                )}
+                {isSuperAdmin && (
+                  <button
+                  onClick={() => setIsTaxonomyMigrationOpen(true)}
+                  className="bg-gray-800 text-gray-300 px-4 py-2 rounded-lg font-bold flex items-center hover:bg-gray-700 transition-colors whitespace-nowrap"
+                  >
+                  <Tag size={20} className="mr-2" /> 分類整理
+                  </button>
+                )}
                 <button 
-                onClick={() => { resetArtworkForm(); setIsFormOpen(true); }}
+                onClick={() => { resetArtworkForm(); if (isSuperAdmin) void loadRemoveBgPreset(); setIsFormOpen(true); }}
                 className="bg-primary text-black px-4 py-2 rounded-lg font-bold flex items-center hover:bg-yellow-500 transition-colors"
                 >
                 <Plus size={20} className="mr-2" /> 新增作品
                 </button>
             </div>
-        )}
+          )}
+        </div>
       </div>
 
+      {coreDataLoad.error && (
+        <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <p className="text-sm text-amber-200">{coreDataLoad.error}</p>
+          <button
+            type="button"
+            onClick={() => loadCoreData()}
+            className="shrink-0 text-sm px-3 py-1.5 rounded-lg border border-amber-400/40 text-amber-100 hover:bg-amber-500/10"
+          >
+            重新載入
+          </button>
+        </div>
+      )}
+
       {/* Tabs */}
-      <div className="flex gap-4 border-b border-gray-700 mb-6">
+      <div className="flex gap-4 border-b border-gray-700 mb-6 overflow-x-auto">
         <button 
           onClick={() => setActiveTab('artworks')}
-          className={`pb-2 px-4 ${activeTab === 'artworks' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}
+          className={`pb-2 px-4 whitespace-nowrap ${activeTab === 'artworks' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}
         >
           作品管理
         </button>
+        {(isSuperAdmin || isBrandAdmin) && (
         <button 
            onClick={() => setActiveTab('appointments')}
-           className={`pb-2 px-4 ${activeTab === 'appointments' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}
+           className={`pb-2 px-4 whitespace-nowrap ${activeTab === 'appointments' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}
         >
-          預約管理 ({appointments.filter(a => a.status === 'PENDING').length} 待審核)
+          預約管理 ({renderCountLabel(pendingActionCount, appointmentsLoad)} 待處理)
         </button>
+        )}
+        {isSuperAdmin && (
+        <>
         <button 
            onClick={() => setActiveTab('customers')}
-           className={`pb-2 px-4 flex items-center gap-2 ${activeTab === 'customers' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}
+           className={`pb-2 px-4 flex items-center gap-2 whitespace-nowrap ${activeTab === 'customers' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}
         >
           <Users size={16} />
-          顧客名單 ({customers.length})
+          顧客名單 ({renderCountLabel(customers.length, customersLoad)})
         </button>
+        <div className="border-l border-gray-700 mx-1"></div>
+        <button 
+           onClick={() => setActiveTab('lineart')}
+           className={`pb-2 px-4 flex items-center gap-2 whitespace-nowrap ${activeTab === 'lineart' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}
+        >
+          <PenTool size={16} />
+          線稿提取
+        </button>
+        <button 
+           onClick={() => setActiveTab('removebg')}
+           className={`pb-2 px-4 flex items-center gap-2 whitespace-nowrap ${activeTab === 'removebg' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}
+        >
+          <Eraser size={16} />
+          自動去背
+        </button>
+        <button 
+           onClick={() => setActiveTab('analytics')}
+           className={`pb-2 px-4 flex items-center gap-2 whitespace-nowrap ${activeTab === 'analytics' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}
+        >
+          <BarChart2 size={16} />
+          數據分析
+        </button>
+        <button 
+           onClick={() => setActiveTab('line_messaging')}
+           className={`pb-2 px-4 flex items-center gap-2 whitespace-nowrap ${activeTab === 'line_messaging' ? 'text-[#00B900] border-b-2 border-[#00B900]' : 'text-gray-400'}`}
+        >
+          <MessageSquare size={16} />
+          LINE 推播
+        </button>
+        <button
+           onClick={() => setActiveTab('brand_settings')}
+           className={`pb-2 px-4 flex items-center gap-2 whitespace-nowrap ${activeTab === 'brand_settings' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}
+        >
+          <Palette size={16} />
+          品牌設定
+        </button>
+        <button
+           onClick={() => setActiveTab('admin_users')}
+           className={`pb-2 px-4 flex items-center gap-2 whitespace-nowrap ${activeTab === 'admin_users' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}
+        >
+          <UserCog size={16} />
+          管理員帳號
+        </button>
+        </>
+        )}
       </div>
 
       {/* --- Artwork List --- */}
       {activeTab === 'artworks' && (
         <div>
+          {coreDataLoad.status === 'loading' && !coreDataLoad.hasLoadedOnce ? (
+            <div className="text-center py-20 text-gray-400">作品載入中…</div>
+          ) : coreDataLoad.status === 'error' && !coreDataLoad.hasLoadedOnce && artworks.length === 0 ? (
+            <div className="text-center py-20">
+              <p className="text-amber-300 mb-4">{coreDataLoad.error || '作品資料載入失敗'}</p>
+              <button type="button" onClick={() => loadCoreData()} className="px-4 py-2 rounded-lg bg-primary text-black font-bold">重新載入</button>
+            </div>
+          ) : (
+        <>
           {/* 排序控制項 */}
           <div className="flex items-center gap-4 mb-4 bg-card p-4 rounded-xl border border-white/5">
             <div className="flex items-center gap-2 text-gray-400">
@@ -864,8 +1636,25 @@ ${consentLink}`;
               <span className="text-sm">{sortOrder === 'desc' ? '高到低' : '低到高'}</span>
             </button>
             <span className="text-xs text-gray-500 ml-auto">
-              共 {artworks.length} 件作品
+              共 {filteredArtworks.length} / {artworks.length} 件作品
             </span>
+          </div>
+
+          <div className="flex flex-wrap gap-2 mb-4">
+            {(Object.keys(ARTWORK_PREVIEW_FILTER_LABELS) as ArtworkPreviewDataFilter[]).map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setPreviewDataFilter(key)}
+                className={`px-3 py-1.5 rounded-full text-xs font-bold transition-colors ${
+                  previewDataFilter === key
+                    ? 'bg-primary text-black'
+                    : 'bg-gray-800 text-gray-400 hover:text-white border border-gray-700'
+                }`}
+              >
+                {ARTWORK_PREVIEW_FILTER_LABELS[key]}
+              </button>
+            ))}
           </div>
 
           <div className="bg-card rounded-xl border border-white/5 overflow-hidden">
@@ -874,6 +1663,7 @@ ${consentLink}`;
                 <tr>
                   <th className="px-6 py-4">縮圖</th>
                   <th className="px-6 py-4">資訊</th>
+                  <th className="px-6 py-4">預覽資料</th>
                   <th className="px-6 py-4">價格</th>
                   <th className="px-6 py-4">瀏覽</th>
                   <th className="px-6 py-4">狀態</th>
@@ -881,7 +1671,11 @@ ${consentLink}`;
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-800">
-                {sortedArtworks.map(art => (
+                {filteredArtworks.map(art => {
+                  const placementState = getArtworkPlacementState(art);
+                  const completeness = getArtworkPreviewCompleteness(art);
+                  const lengthLabel = formatRecommendedLength(art.heightCm);
+                  return (
                 <tr key={art.id} className="hover:bg-white/5 transition-colors">
                   <td className="px-6 py-4">
                     <img src={art.imageUrl} alt="" className="w-12 h-12 rounded object-cover" />
@@ -898,13 +1692,36 @@ ${consentLink}`;
                             <Heart size={12} className="fill-current"/> 
                             {stats[art.id] || 0} 收藏
                         </div>
-                        {art.pngUrl && (
-                          <span className="text-xs bg-green-900/50 text-green-400 px-1.5 py-0.5 rounded flex items-center gap-1">
-                            <Layers size={10} /> PNG
-                          </span>
-                        )}
                       </div>
                     </button>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="space-y-1 min-w-[180px]">
+                      <PreviewDataStatusLine
+                        label="PNG"
+                        ok={hasArtworkPng(art)}
+                        okText="✓ 已有"
+                        warnText="⚠ 缺少"
+                      />
+                      <PreviewDataStatusLine
+                        label="建議長度"
+                        ok={hasValidRecommendedLength(art)}
+                        okText={lengthLabel ?? '✓ 已有'}
+                        warnText="⚠ 未填"
+                      />
+                      <PreviewDataStatusLine
+                        label="施作部位"
+                        ok={hasValidArtworkPlacements(art)}
+                        okText={placementState.labels || '✓ 已設定'}
+                        warnText="⚠ 未設定"
+                      />
+                      <p className="text-[11px] text-gray-500 pt-1">{completeness.complete} / {completeness.total} 完整</p>
+                      {art.isNew && (
+                        <span className="inline-flex mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary/15 text-primary border border-primary/30">
+                          新上架
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-6 py-4">
                      {art.specialPrice ? (
@@ -925,9 +1742,9 @@ ${consentLink}`;
                   <td className="px-6 py-4">
                     <button 
                       onClick={() => toggleStatus(art.id)}
-                      className={`px-3 py-1 rounded-full text-xs font-bold ${art.status === ArtworkStatus.AVAILABLE ? 'bg-green-900 text-green-200' : 'bg-red-900 text-red-200'}`}
+                      className={`px-3 py-1 rounded-full text-xs font-bold ${isArtworkClaimedForAdmin(art) ? 'bg-red-900 text-red-200' : 'bg-green-900 text-green-200'}`}
                     >
-                      {art.status === ArtworkStatus.AVAILABLE ? '未認領' : '已認領'}
+                      {getArtworkClaimAdminLabel(art)}
                     </button>
                   </td>
                   <td className="px-6 py-4 text-right space-x-2">
@@ -939,10 +1756,12 @@ ${consentLink}`;
                     </button>
                   </td>
                 </tr>
-              ))}
+              );})}
               </tbody>
             </table>
           </div>
+        </>
+          )}
         </div>
       )}
 
@@ -964,10 +1783,34 @@ ${consentLink}`;
             </button>
           </div>
 
+          <div className="mb-4 flex flex-wrap gap-2">
+            {(Object.keys(ADMIN_APPOINTMENT_FILTER_LABELS) as AdminAppointmentFilter[]).map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setAppointmentFilter(key)}
+                className={`px-3 py-1.5 rounded-full text-xs font-bold transition-colors ${
+                  appointmentFilter === key
+                    ? 'bg-primary text-black'
+                    : 'bg-gray-800 text-gray-400 hover:text-white border border-gray-700'
+                }`}
+              >
+                {ADMIN_APPOINTMENT_FILTER_LABELS[key]}
+              </button>
+            ))}
+          </div>
+
           <div className="bg-card rounded-xl border border-white/5 overflow-hidden">
-             {appointments.length === 0 ? (
+             {appointmentsLoad.status === 'loading' && !appointmentsLoad.hasLoadedOnce ? (
+                 <div className="text-center py-20 text-gray-400">預約資料載入中…</div>
+             ) : appointmentsLoad.status === 'error' && !appointmentsLoad.hasLoadedOnce && appointments.length === 0 ? (
+                 <div className="text-center py-20">
+                   <p className="text-amber-300 mb-4">{appointmentsLoad.error || '預約資料載入失敗'}</p>
+                   <button type="button" onClick={() => loadCoreData()} className="px-4 py-2 rounded-lg bg-primary text-black font-bold">重新載入</button>
+                 </div>
+             ) : filteredAppointments.length === 0 ? (
                  <div className="text-center py-20 text-gray-500">
-                     目前沒有預約資料。
+                     {appointmentsLoad.hasLoadedOnce && appointments.length === 0 ? '目前沒有預約資料。' : '此篩選條件下沒有預約。'}
                  </div>
              ) : (
                 <table className="w-full text-left">
@@ -981,7 +1824,7 @@ ${consentLink}`;
                     </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-800">
-                    {appointments.map(apt => (
+                    {filteredAppointments.map(apt => (
                         <tr key={apt.id} className="hover:bg-white/5 transition-colors">
                             <td className="px-6 py-4">
                                 <div className="flex items-center gap-2">
@@ -1035,126 +1878,26 @@ ${consentLink}`;
                                 </div>
                             </td>
                             <td className="px-6 py-4">
-                                {apt.status === 'PENDING' && (
-                                    <span className="bg-yellow-900/30 text-yellow-400 border border-yellow-900/50 px-2 py-1 rounded text-xs font-bold flex items-center w-fit gap-1">
-                                        <Clock size={12}/> 待審核
-                                    </span>
-                                )}
-                                {apt.status === 'WAITING_PAYMENT' && (
-                                    <span className="bg-orange-900/30 text-orange-400 border border-orange-900/50 px-2 py-1 rounded text-xs font-bold flex items-center w-fit gap-1">
-                                        <DollarSign size={12}/> 待付款
-                                    </span>
-                                )}
-                                {apt.status === 'SIGNING' && (
-                                    <span className="bg-blue-900/30 text-blue-400 border border-blue-900/50 px-2 py-1 rounded text-xs font-bold flex items-center w-fit gap-1">
-                                        <FileText size={12}/> 簽屬中
-                                    </span>
-                                )}
-                                {apt.status === 'SIGNED' && (
-                                    <span className="bg-purple-900/30 text-purple-400 border border-purple-900/50 px-2 py-1 rounded text-xs font-bold flex items-center w-fit gap-1">
-                                        <CheckCircle size={12}/> 簽屬完成
-                                    </span>
-                                )}
-                                {apt.status === 'BOOKED' && (
-                                    <span className="bg-green-900/30 text-green-400 border border-green-900/50 px-2 py-1 rounded text-xs font-bold flex items-center w-fit gap-1">
-                                        <CheckCircle size={12}/> 已確認
-                                    </span>
-                                )}
-                                {apt.status === 'COMPLETED' && (
-                                    <span className="bg-gray-700 text-gray-400 px-2 py-1 rounded text-xs font-bold">已完成</span>
-                                )}
+                                <span className={`border px-2 py-1 rounded text-xs font-bold flex items-center w-fit gap-1 ${getAdminStatusBadgeClass(apt.status)}`}>
+                                    {getAdminStatusLabel(apt.status)}
+                                </span>
                             </td>
                             <td className="px-6 py-4 text-right">
-                                <div className="flex flex-wrap gap-1 justify-end">
-                                    {/* 認領圖：待審核 → 確認訂金 */}
-                                    {apt.status === 'PENDING' && apt.orderType !== 'CUSTOM' && (
-                                        <button 
-                                            onClick={() => openDepositModal(apt)}
-                                            className="bg-primary text-black text-xs font-bold px-3 py-1.5 rounded hover:bg-yellow-500 transition-colors"
-                                        >
-                                            確認訂金
-                                        </button>
-                                    )}
-                                    
-                                    {/* 待付款：複製訂金訊息 + 已收到訂金 */}
-                                    {apt.status === 'WAITING_PAYMENT' && (
-                                        <>
-                                            <button 
-                                                onClick={() => copyDepositMessage(apt)}
-                                                className="bg-blue-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-blue-500 transition-colors flex items-center gap-1"
-                                            >
-                                                <Copy size={12}/> 複製訂金訊息
-                                            </button>
-                                            <button 
-                                                onClick={() => confirmReceivedDeposit(apt)}
-                                                className="bg-green-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-green-500 transition-colors"
-                                            >
-                                                已收到訂金
-                                            </button>
-                                        </>
-                                    )}
-                                    
-                                    {/* 客製圖：簽屬中狀態 - 如果沒有圖片，顯示上傳按鈕 */}
-                                    {apt.status === 'SIGNING' && apt.orderType === 'CUSTOM' && !apt.artworkImage && (
-                                        <button 
-                                            onClick={() => openCustomImageUpload(apt)}
-                                            className="bg-purple-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-purple-500 transition-colors flex items-center gap-1"
-                                        >
-                                            <Plus size={12}/> 上傳客製圖片
-                                        </button>
-                                    )}
-                                    
-                                    {/* 客製圖：簽屬中狀態 - 如果有圖片，顯示複製同意書訊息 */}
-                                    {apt.status === 'SIGNING' && (apt.orderType !== 'CUSTOM' || apt.artworkImage) && (
-                                        <button 
-                                            onClick={() => copyConsentMessage(apt)}
-                                            className="bg-blue-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-blue-500 transition-colors flex items-center gap-1"
-                                        >
-                                            <Copy size={12}/> 複製同意書訊息
-                                        </button>
-                                    )}
-                                    
-                                    {/* 客製圖：簽屬中狀態 - 有圖片時也可以更換圖片 */}
-                                    {apt.status === 'SIGNING' && apt.orderType === 'CUSTOM' && apt.artworkImage && (
-                                        <button 
-                                            onClick={() => openCustomImageUpload(apt)}
-                                            className="bg-gray-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-gray-500 transition-colors flex items-center gap-1"
-                                        >
-                                            <Edit size={12}/> 更換圖片
-                                        </button>
-                                    )}
-                                    
-                                    {/* 簽屬完成：查看簽署書 */}
-                                    {apt.status === 'SIGNED' && (
-                                        <button 
-                                            onClick={() => navigate(`/consent/${apt.id}`)}
-                                            className="bg-purple-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-purple-500 transition-colors"
-                                        >
-                                            查看簽署書
-                                        </button>
-                                    )}
-                                    
-                                    {/* 通用按鈕 */}
-                                    <button
-                                        onClick={() => copyAppointmentLink(apt.id)}
-                                        className="bg-indigo-600 text-white text-xs font-bold px-3 py-1.5 rounded hover:bg-indigo-500 transition-colors flex items-center gap-1"
-                                        title="複製訂單查看連結給客人"
-                                    >
-                                        <Copy size={12}/> 訂單連結
-                                    </button>
-                                    <button
-                                        onClick={() => handleEditAppointment(apt)}
-                                        className="bg-gray-700 hover:bg-white hover:text-black text-gray-300 text-xs font-bold px-3 py-1.5 rounded transition-colors"
-                                    >
-                                        <Edit size={14}/>
-                                    </button>
-                                    <button 
-                                        onClick={() => cancelAppointment(apt.id)}
-                                        className="text-red-400 hover:text-red-300 hover:bg-red-900/20 px-3 py-1.5 rounded text-xs font-bold border border-red-900/30"
-                                    >
-                                        取消
-                                    </button>
-                                </div>
+                                <AdminAppointmentActions
+                                    apt={apt}
+                                    openMenuId={openActionMenuId}
+                                    setOpenMenuId={setOpenActionMenuId}
+                                    onSetDeposit={openDepositModal}
+                                    onConfirmReceivedDeposit={openReceiveDepositModal}
+                                    onCopyDepositMessage={copyDepositMessage}
+                                    onCopyConsentMessage={copyConsentMessage}
+                                    onCompleteOrder={openCompleteModal}
+                                    onCopyLink={copyAppointmentLink}
+                                    onEdit={handleEditAppointment}
+                                    onCancel={cancelAppointment}
+                                    onUploadCustomImage={openCustomImageUpload}
+                                    onViewConsent={(id) => navigate(`/consent/${id}`)}
+                                />
                             </td>
                         </tr>
                     ))}
@@ -1167,10 +1910,46 @@ ${consentLink}`;
 
       {/* --- Customers List --- */}
       {activeTab === 'customers' && (
+        <div className="space-y-4">
+          {/* 搜尋列 */}
+          <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
+            <div className="relative flex-1 max-w-sm">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+              <input
+                type="text"
+                value={customerSearch}
+                onChange={e => setCustomerSearch(e.target.value)}
+                placeholder="搜尋姓名、ID、標籤或收藏數（例如 >0、>=3）..."
+                className="w-full bg-card border border-white/10 rounded-xl pl-9 pr-9 py-2.5 text-white text-sm placeholder-gray-500 focus:border-primary focus:outline-none"
+              />
+              {customerSearch && (
+                <button
+                  onClick={() => setCustomerSearch('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+            <span className="text-gray-400 text-sm flex-shrink-0">
+              {(() => {
+                const count = filteredCustomers.length;
+                return `共 ${count} 位顧客`;
+              })()}
+            </span>
+          </div>
+
         <div className="bg-card rounded-xl border border-white/5 overflow-hidden">
-          {customers.length === 0 ? (
+          {customersLoad.status === 'loading' && !customersLoad.hasLoadedOnce ? (
+            <div className="text-center py-20 text-gray-400">顧客資料載入中…</div>
+          ) : customersLoad.status === 'error' && !customersLoad.hasLoadedOnce && customers.length === 0 ? (
+            <div className="text-center py-20">
+              <p className="text-amber-300 mb-4">{customersLoad.error || '顧客資料載入失敗'}</p>
+              <button type="button" onClick={() => loadCoreData()} className="px-4 py-2 rounded-lg bg-primary text-black font-bold">重新載入</button>
+            </div>
+          ) : customers.length === 0 ? (
             <div className="text-center py-20 text-gray-500">
-              目前沒有顧客資料。
+              {customersLoad.hasLoadedOnce ? '目前沒有顧客資料。' : '顧客資料載入中…'}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -1178,13 +1957,14 @@ ${consentLink}`;
                 <thead className="bg-dark text-gray-400 text-xs uppercase">
                   <tr>
                     <th className="px-6 py-4">顧客資訊</th>
+                    <th className="px-6 py-4">標籤</th>
                     <th className="px-6 py-4">加入日期</th>
                     <th className="px-6 py-4">最後登入</th>
                     <th className="px-6 py-4">收藏數量</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800">
-                  {customers.map((customer) => (
+                  {filteredCustomers.map((customer) => (
                     <tr key={customer.id} className="hover:bg-white/5 transition-colors">
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
@@ -1203,6 +1983,26 @@ ${consentLink}`;
                             <p className="font-bold text-white text-lg">{customer.name}</p>
                             <p className="text-xs text-gray-400">ID: {customer.id}</p>
                           </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex flex-wrap gap-1.5 items-center min-w-[140px]">
+                          {(customerTagMap[customer.id] || []).map(tag => (
+                            <span
+                              key={tag.id}
+                              className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium text-white"
+                              style={{ backgroundColor: tag.color }}
+                            >
+                              {tag.name}
+                            </span>
+                          ))}
+                          <button
+                            onClick={() => setTagModalCustomer(customer)}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border border-dashed border-gray-600 text-gray-400 hover:border-primary hover:text-primary transition-colors"
+                          >
+                            <Tag size={10} />
+                            {(customerTagMap[customer.id] || []).length === 0 ? '設定標籤' : '編輯'}
+                          </button>
                         </div>
                       </td>
                       <td className="px-6 py-4">
@@ -1238,19 +2038,141 @@ ${consentLink}`;
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-2">
                           <Heart size={16} className="text-pink-500" />
-                          <span className="text-white font-bold text-lg">
+                          <button
+                            onClick={() => setFavoriteViewerCustomer(customer)}
+                            className="text-white font-bold text-lg hover:text-pink-400 transition-colors underline-offset-4 hover:underline"
+                          >
                             {customer.favoriteCount || 0}
-                          </span>
+                          </button>
                           <span className="text-gray-400 text-sm">件作品</span>
                         </div>
                       </td>
                     </tr>
                   ))}
+                  {customerSearch && filteredCustomers.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-6 py-14 text-center text-gray-500">
+                        找不到符合「{customerSearch}」的顧客
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
           )}
         </div>
+        </div>
+      )}
+
+      {/* --- Lineart Tool --- */}
+      {activeTab === 'lineart' && (
+        <div>
+          <LineartTool />
+        </div>
+      )}
+
+      {/* --- Remove Background Tool --- */}
+      {activeTab === 'removebg' && (
+        <div>
+          <RemoveBgTool />
+        </div>
+      )}
+
+      {/* --- Analytics Dashboard --- */}
+      {activeTab === 'analytics' && (
+        <div>
+          <AnalyticsTab key={brandRevision} />
+        </div>
+      )}
+
+      {/* --- LINE 推播管理 --- */}
+      {activeTab === 'line_messaging' && (
+        <div>
+          <LineMessagingTab
+            customers={customers}
+            customersLoad={customersLoad}
+            memberTags={memberTags}
+            memberTagsLoad={memberTagsLoad}
+            onReloadCustomers={loadCoreData}
+            onReloadTags={loadMemberTags}
+          />
+        </div>
+      )}
+
+      {/* --- Brand Settings (SUPER_ADMIN only) --- */}
+      {activeTab === 'brand_settings' && isSuperAdmin && (
+        <div>
+          <AdminBrandSettingsPanel key={brandRevision} brandRevision={brandRevision} />
+        </div>
+      )}
+
+      {/* --- Admin Users (SUPER_ADMIN only tab) --- */}
+      {activeTab === 'admin_users' && isSuperAdmin && (
+        <div>
+          <AdminUsersPanel />
+        </div>
+      )}
+
+      {/* --- Customer Favorite Artworks Modal --- */}
+      {favoriteViewerCustomer && (
+        <div className="fixed inset-0 z-[65] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl bg-card border border-white/10 rounded-2xl shadow-xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
+              <h3 className="text-lg font-bold text-white">
+                {favoriteViewerCustomer.name} 的收藏作品
+              </h3>
+              <button
+                onClick={() => setFavoriteViewerCustomer(null)}
+                className="text-gray-400 hover:text-white transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="px-5 py-4 max-h-[70vh] overflow-y-auto">
+              <p className="text-sm text-gray-400 mb-4">共 {favoriteViewerIds.length} 件收藏</p>
+
+              {favoriteViewerArtworks.length === 0 ? (
+                <div className="text-gray-500 text-center py-10">此會員目前沒有可顯示的收藏作品</div>
+              ) : (
+                <div className="space-y-3">
+                  {favoriteViewerArtworks.map((art) => (
+                    <div key={art.id} className="flex items-center gap-3 bg-dark/50 rounded-xl border border-white/5 p-3">
+                      <img
+                        src={art.imageUrl}
+                        alt={art.title}
+                        className="w-14 h-14 rounded-lg object-cover border border-white/10"
+                      />
+                      <div className="min-w-0">
+                        <p className="text-white font-semibold truncate">{art.title}</p>
+                        <p className="text-xs text-gray-500 truncate">ID: {art.id}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {missingFavoriteCount > 0 && (
+                <p className="text-xs text-amber-400 mt-4">
+                  另有 {missingFavoriteCount} 件收藏作品已不存在或已下架，無法顯示。
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- Customer Tag Modal --- */}
+      {tagModalCustomer && (
+        <CustomerTagModal
+          customer={tagModalCustomer}
+          tags={memberTags}
+          onClose={() => setTagModalCustomer(null)}
+          onSaved={() => {
+            setTagModalCustomer(null);
+            loadCustomerTags(customers);
+          }}
+        />
       )}
 
       {/* --- Upload Modal --- */}
@@ -1261,60 +2183,219 @@ ${consentLink}`;
               <h2 className="text-xl font-bold text-white">{editingId ? '編輯作品' : '上傳新作品'}</h2>
               <button onClick={() => setIsFormOpen(false)} className="text-gray-400 hover:text-white"><X /></button>
             </div>
+            {currentAdminBrand && (
+              <div className="px-6 pt-4">
+                <p className="text-sm text-amber-200/90 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+                  目前上架品牌：<strong>{currentAdminBrand.name}</strong>
+                </p>
+              </div>
+            )}
             
             <form onSubmit={handleSubmitArtwork} className="p-6 space-y-6">
               
-              {/* Image Input */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* 主圖片上傳 */}
-                <div className="border-2 border-dashed border-gray-700 rounded-xl p-6 text-center hover:border-primary transition-colors cursor-pointer relative">
-                  <input 
-                    type="file" 
-                    accept="image/*"
-                    onChange={handleImageChange}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                    required={!imageUrl}
-                  />
-                  {imageUrl ? (
-                    <img src={imageUrl} alt="Preview" className="mx-auto h-40 object-contain" />
-                  ) : (
-                    <div className="text-gray-500">
-                      <p className="font-medium">主圖片</p>
-                      <p className="text-xs mt-1">點擊上傳作品圖片</p>
-                    </div>
-                  )}
-                </div>
-
-                {/* PNG 去背檔案上傳 */}
-                <div className="border-2 border-dashed border-gray-700 rounded-xl p-6 text-center hover:border-green-500 transition-colors cursor-pointer relative bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCI+CjxyZWN0IHdpZHRoPSIxMCIgaGVpZ2h0PSIxMCIgZmlsbD0iIzJhMmEyYSIvPgo8cmVjdCB4PSIxMCIgeT0iMTAiIHdpZHRoPSIxMCIgaGVpZ2h0PSIxMCIgZmlsbD0iIzJhMmEyYSIvPgo8L3N2Zz4=')]">
-                  <input 
-                    type="file" 
-                    accept="image/png"
-                    onChange={handlePngChange}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  />
-                  {pngUrl ? (
-                    <div className="relative">
-                      <img src={pngUrl} alt="PNG Preview" className="mx-auto h-40 object-contain" />
+              {/* Image Upload - 最多3張 */}
+              <div>
+                <label className="block text-sm text-gray-400 mb-2">作品圖片（最多 3 張，第一張為封面）</label>
+                <div className="grid grid-cols-3 gap-3">
+                  {imageUrls.map((url, idx) => (
+                    <div key={idx} className="relative border-2 border-gray-700 rounded-xl overflow-hidden aspect-square bg-dark">
+                      <img src={url} alt={`圖片 ${idx + 1}`} className="w-full h-full object-cover" />
+                      {idx === 0 && (
+                        <span className="absolute bottom-1 left-1 bg-primary text-black text-[10px] font-bold px-1.5 py-0.5 rounded">封面</span>
+                      )}
                       <button 
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); setPngUrl(''); }}
-                        className="absolute top-0 right-0 bg-red-600 text-white p-1 rounded-full hover:bg-red-500"
+                        onClick={() => removeImage(idx)}
+                        className="absolute top-1 right-1 bg-red-600 text-white p-1 rounded-full hover:bg-red-500 z-10"
                       >
                         <X size={14} />
                       </button>
                     </div>
-                  ) : (
-                    <div className="text-gray-500">
-                      <Layers className="mx-auto mb-2 text-green-500" size={24} />
-                      <p className="font-medium text-green-400">PNG 去背檔 (選填)</p>
-                      <p className="text-xs mt-1">用於刺青預覽功能</p>
+                  ))}
+                  {imageUrls.length < 3 && (
+                    <div className="border-2 border-dashed border-gray-700 rounded-xl aspect-square flex items-center justify-center hover:border-primary transition-colors cursor-pointer relative">
+                      <input 
+                        type="file" 
+                        accept="image/*"
+                        onChange={handleImageChange}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      />
+                      <div className="text-gray-500 text-center">
+                        <Plus className="mx-auto mb-1" size={24} />
+                        <p className="text-xs">{imageUrls.length === 0 ? '上傳圖片' : '新增圖片'}</p>
+                        <p className="text-[10px] text-gray-600">{imageUrls.length}/3</p>
+                      </div>
                     </div>
                   )}
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="rounded-xl border border-white/10 bg-dark/40 p-4 space-y-4">
+                <div>
+                  <h3 className="text-sm font-bold text-white">預覽與尺寸資料</h3>
+                  <p className="text-xs text-gray-500 mt-1">供 Tattoo Preview 與未來 3D Preview 使用</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">透明 PNG</label>
+
+                  <div className="rounded-lg border border-white/10 bg-dark/60 p-3 mb-3 space-y-2">
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={autoGeneratePng}
+                        onChange={(e) => setAutoGeneratePng(e.target.checked)}
+                        className="mt-1 accent-primary"
+                      />
+                      <span>
+                        <span className="text-sm text-white block">自動產生透明 PNG</span>
+                        <span className="text-xs text-gray-500 block mt-1">
+                          使用自動去背的預設參數，儲存作品時自動產生透明 PNG。
+                        </span>
+                      </span>
+                    </label>
+                    <p className="text-xs text-gray-500 pl-7">
+                      目前預設：{formatRemoveBgPresetSummary(removeBgPreset, { isSystemDefault: !hasCustomRemoveBgPreset })}
+                    </p>
+                    {!hasCustomRemoveBgPreset && (
+                      <p className="text-xs text-amber-300/90 pl-7">目前使用系統預設，可至自動去背頁調整。</p>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsFormOpen(false);
+                        setActiveTab('removebg');
+                      }}
+                      className="text-xs text-primary hover:underline pl-7"
+                    >
+                      前往調整去背預設
+                    </button>
+                    {autoGeneratePng && !manualPngUploaded && getCoverImageSource() && (
+                      <div className="pl-7 space-y-2">
+                        <p className="text-xs text-emerald-400">✓ 將自動產生 PNG</p>
+                        <button
+                          type="button"
+                          onClick={handlePreviewAutoPng}
+                          disabled={isPreviewingAutoPng || isSubmittingArtwork}
+                          className="text-xs px-3 py-1.5 rounded border border-white/10 text-gray-300 hover:text-white hover:border-white/20 disabled:opacity-50"
+                        >
+                          {isPreviewingAutoPng ? '預覽產生中...' : '預覽結果'}
+                        </button>
+                        {autoPngPreviewUrl && (
+                          <img src={autoPngPreviewUrl} alt="自動去背預覽" className="h-20 object-contain bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCI+CjxyZWN0IHdpZHRoPSIxMCIgaGVpZ2h0PSIxMCIgZmlsbD0iIzJhMmEyYSIvPgo8cmVjdCB4PSIxMCIgeT0iMTAiIHdpZHRoPSIxMCIgaGVpZ2h0PSIxMCIgZmlsbD0iIzJhMmEyYSIvPgo8L3N2Zz4=')] rounded border border-white/10" />
+                        )}
+                        {autoPngColorNote && (
+                          <p className="text-xs text-amber-300/90">{autoPngColorNote}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="border-2 border-dashed border-gray-700 rounded-xl p-4 text-center hover:border-green-500 transition-colors cursor-pointer relative bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCI+CjxyZWN0IHdpZHRoPSIxMCIgaGVpZ2h0PSIxMCIgZmlsbD0iIzJhMmEyYSIvPgo8cmVjdCB4PSIxMCIgeT0iMTAiIHdpZHRoPSIxMCIgaGVpZ2h0PSIxMCIgZmlsbD0iIzJhMmEyYSIvPgo8L3N2Zz4=')]">
+                    <input
+                      type="file"
+                      accept="image/png"
+                      onChange={handlePngChange}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    {pngUrl ? (
+                      <div className="relative inline-block">
+                        <img src={pngUrl} alt="PNG Preview" className="mx-auto h-24 object-contain" />
+                        <p className="text-xs text-emerald-400 mt-2">✓ 已有透明 PNG</p>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPngUrl('');
+                            setManualPngUploaded(false);
+                            clearAutoPngPreview();
+                          }}
+                          className="absolute top-0 right-0 bg-red-600 text-white p-1 rounded-full hover:bg-red-500"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="text-gray-500 flex items-center justify-center gap-3">
+                        <Layers className="text-amber-400" size={20} />
+                        <div className="text-left">
+                          <p className="font-medium text-amber-300 text-sm">⚠ 尚未上傳 PNG</p>
+                          <p className="text-xs">點擊手動上傳透明去背檔</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {pngUrl && (
+                    <button
+                      type="button"
+                      onClick={handleRegeneratePng}
+                      disabled={isRegeneratingPng || isSubmittingArtwork || !getCoverImageSource()}
+                      className="mt-2 text-xs px-3 py-1.5 rounded border border-primary/30 text-primary hover:bg-primary/10 disabled:opacity-50"
+                    >
+                      {isRegeneratingPng ? '重新產生中...' : '重新產生 PNG'}
+                    </button>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">建議長度</label>
+                  <div className="flex items-center gap-2 max-w-xs">
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0.1"
+                      value={heightCm}
+                      onChange={e => setHeightCm(e.target.value)}
+                      className="w-full bg-dark border border-gray-700 rounded p-2 text-white"
+                      placeholder="24.8"
+                    />
+                    <span className="text-sm text-gray-400 shrink-0">cm</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">尺寸補充說明 (選填)</label>
+                  <input
+                    type="text"
+                    value={sizeNote}
+                    onChange={e => setSizeNote(e.target.value)}
+                    className="w-full bg-dark border border-gray-700 rounded p-2 text-white"
+                    placeholder="例如：依刺青師建議可微調"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">建議施作部位</label>
+                  <div className="flex flex-wrap gap-2">
+                    {ARTWORK_PLACEMENT_OPTIONS.map((option) => {
+                      const selected = selectedPlacementKeys.includes(option.key);
+                      return (
+                        <button
+                          key={option.key}
+                          type="button"
+                          onClick={() => togglePlacementKey(option.key)}
+                          className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${
+                            selected
+                              ? 'bg-primary/20 border-primary text-primary'
+                              : 'bg-dark border-gray-700 text-gray-300 hover:border-gray-500'
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {legacyPlacements.length > 0 && (
+                    <div className="mt-3 rounded-lg border border-amber-700/30 bg-amber-900/10 px-3 py-2">
+                      <p className="text-xs text-amber-300 mb-1">舊資料（請重新選擇標準部位後儲存）</p>
+                      <p className="text-xs text-amber-100/90">{legacyPlacements.join('、')}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4">
                 <div>
                   <label className="block text-sm text-gray-400 mb-1">作品名稱</label>
                   <input 
@@ -1325,17 +2406,39 @@ ${consentLink}`;
                     required
                   />
                 </div>
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1">分類</label>
-                  <select 
-                    value={category} 
-                    onChange={e => setCategory(e.target.value)}
-                    className="w-full bg-dark border border-gray-700 rounded p-2 text-white"
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-dark/30 p-4">
+                <label className="block text-sm font-bold text-gray-300 mb-3">作品分類</label>
+                <ArtworkTagSelector
+                  tagsByGroup={taxonomyCatalog.tagsByGroup}
+                  selectedTagIds={selectedTagIds}
+                  onChange={setSelectedTagIds}
+                  activeOnly
+                />
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-dark/30 p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-bold text-gray-300">新上架作品</p>
+                    <p className="text-xs text-gray-500 mt-1">開啟後，此作品會出現在前台「新上架」快速篩選。</p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={isNewArrival}
+                    onClick={() => setIsNewArrival((prev) => !prev)}
+                    className={`relative inline-flex h-7 w-12 shrink-0 rounded-full transition-colors ${
+                      isNewArrival ? 'bg-primary' : 'bg-gray-700'
+                    }`}
                   >
-                    {categories.filter(c => c !== 'All').map(c => (
-                      <option key={c} value={c}>{c}</option>
-                    ))}
-                  </select>
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform mt-1 ${
+                        isNewArrival ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
                 </div>
               </div>
 
@@ -1390,11 +2493,16 @@ ${consentLink}`;
                 </div>
               </div>
 
+              {artworkSubmitStatus && (
+                <p className="text-sm text-primary text-center">{artworkSubmitStatus}</p>
+              )}
+
               <button 
                 type="submit" 
-                className="w-full bg-primary text-black font-bold py-3 rounded-lg hover:bg-yellow-500"
+                disabled={isSubmittingArtwork || isRegeneratingPng}
+                className="w-full bg-primary text-black font-bold py-3 rounded-lg hover:bg-yellow-500 disabled:opacity-50"
               >
-                儲存作品
+                {isSubmittingArtwork ? '處理中...' : '儲存作品'}
               </button>
             </form>
           </div>
@@ -1603,23 +2711,24 @@ ${consentLink}`;
         </div>
       )}
 
-      {/* --- Deposit Confirmation Modal --- */}
+      {/* --- 設定訂金 Modal --- */}
       {isDepositModalOpen && confirmingApt && (
           <div className="fixed inset-0 bg-black/80 z-[70] flex items-center justify-center p-4">
               <div className="bg-card w-full max-w-md rounded-2xl shadow-2xl border border-white/10">
                   <div className="p-5 border-b border-white/10 flex justify-between items-center bg-dark/50">
                       <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                          <DollarSign size={18} className="text-primary"/> 確認訂金
+                          <DollarSign size={18} className="text-primary"/> 設定訂金
                       </h2>
                       <button onClick={() => { setIsDepositModalOpen(false); setConfirmingApt(null); setDepositAmount(''); }} className="text-gray-400 hover:text-white"><X size={20}/></button>
                   </div>
                   <div className="p-6 space-y-4">
                       <div>
-                          <label className="block text-sm font-bold text-gray-300 mb-2">
-                              顧客：{confirmingApt.customerName}
-                          </label>
+                          <p className="text-sm text-gray-300 mb-3">顧客：{confirmingApt.customerName}</p>
+                          {confirmingApt.artworkTitle && (
+                            <p className="text-sm text-gray-400 mb-3">作品：{confirmingApt.artworkTitle}</p>
+                          )}
                           <label className="block text-xs font-bold text-gray-500 uppercase mb-1">
-                              訂金金額 (NT$)
+                              訂金金額 NT$
                           </label>
                           <input 
                               type="number" 
@@ -1647,7 +2756,7 @@ ${consentLink}`;
                               onClick={confirmDeposit}
                               className="flex-1 bg-primary text-black font-bold py-3 rounded-lg hover:bg-yellow-500 transition-colors"
                           >
-                              確認
+                              儲存訂金
                           </button>
                       </div>
                   </div>
@@ -1655,33 +2764,91 @@ ${consentLink}`;
           </div>
       )}
 
-      {/* --- Category Manager Modal (Simplified) --- */}
-      {isCatManagerOpen && (
+      {/* --- 確認已收訂金 Modal --- */}
+      {isReceiveDepositModalOpen && receiveDepositApt && (
           <div className="fixed inset-0 bg-black/80 z-[70] flex items-center justify-center p-4">
-              <div className="bg-card w-full max-w-sm rounded-xl p-6 border border-white/10">
-                  <h3 className="text-lg font-bold text-white mb-4">管理分類</h3>
-                  <ul className="space-y-2 mb-4 max-h-40 overflow-y-auto">
-                      {categories.map(cat => (
-                          <li key={cat} className="flex justify-between items-center text-sm bg-white/5 p-2 rounded">
-                              {cat}
-                              {cat !== 'All' && (
-                                  <button onClick={() => handleDeleteCategory(cat)} className="text-red-400 hover:text-white"><X size={14}/></button>
-                              )}
-                          </li>
-                      ))}
-                  </ul>
-                  <div className="flex gap-2">
-                      <input 
-                        className="flex-1 bg-dark border border-gray-700 rounded px-2 text-sm text-white" 
-                        placeholder="新分類名稱"
-                        value={newCategoryInput}
-                        onChange={e => setNewCategoryInput(e.target.value)}
-                      />
-                      <button onClick={handleAddCategory} className="bg-primary text-black px-3 rounded font-bold text-sm">新增</button>
+              <div className="bg-card w-full max-w-md rounded-2xl shadow-2xl border border-white/10">
+                  <div className="p-5 border-b border-white/10 flex justify-between items-center bg-dark/50">
+                      <h2 className="text-lg font-bold text-white">確認已收到訂金？</h2>
+                      <button onClick={() => { setIsReceiveDepositModalOpen(false); setReceiveDepositApt(null); }} className="text-gray-400 hover:text-white"><X size={20}/></button>
                   </div>
-                  <button onClick={() => setIsCatManagerOpen(false)} className="w-full mt-4 text-gray-400 text-sm hover:text-white">關閉</button>
+                  <div className="p-6 space-y-4">
+                      <div className="rounded-xl border border-white/10 bg-black/25 px-4 py-3 space-y-2 text-sm">
+                          <p className="text-white"><span className="text-gray-500">顧客：</span>{receiveDepositApt.customerName}</p>
+                          <p className="text-white"><span className="text-gray-500">作品：</span>{receiveDepositApt.artworkTitle || '—'}</p>
+                          <p className="text-white"><span className="text-gray-500">預約：</span>{receiveDepositApt.date} @ {receiveDepositApt.timeSlot}</p>
+                          <p className="text-primary font-bold"><span className="text-gray-500 font-normal">訂金：</span>NT$ {(receiveDepositApt.depositPaid || 0).toLocaleString()}</p>
+                      </div>
+                      <div className="text-sm text-gray-400 space-y-1">
+                          <p>確認後：</p>
+                          <p>✓ Artwork 正式標記為已認領</p>
+                          <p>✓ Reservation 進入後續處理</p>
+                      </div>
+                      <div className="flex gap-3 pt-2">
+                          <button
+                              onClick={() => { setIsReceiveDepositModalOpen(false); setReceiveDepositApt(null); }}
+                              className="flex-1 bg-gray-700 text-gray-300 font-bold py-3 rounded-lg hover:bg-gray-600 transition-colors"
+                          >
+                              取消
+                          </button>
+                          <button
+                              onClick={confirmReceivedDeposit}
+                              className="flex-1 bg-green-600 text-white font-bold py-3 rounded-lg hover:bg-green-500 transition-colors"
+                          >
+                              確認已收訂金
+                          </button>
+                      </div>
+                  </div>
               </div>
           </div>
+      )}
+
+      {/* --- 完成訂單 Modal --- */}
+      {isCompleteModalOpen && completingApt && (
+          <div className="fixed inset-0 bg-black/80 z-[70] flex items-center justify-center p-4">
+              <div className="bg-card w-full max-w-md rounded-2xl shadow-2xl border border-white/10">
+                  <div className="p-5 border-b border-white/10 flex justify-between items-center bg-dark/50">
+                      <h2 className="text-lg font-bold text-white">完成這筆訂單？</h2>
+                      <button onClick={() => { setIsCompleteModalOpen(false); setCompletingApt(null); }} className="text-gray-400 hover:text-white"><X size={20}/></button>
+                  </div>
+                  <div className="p-6 space-y-4">
+                      <div className="rounded-xl border border-white/10 bg-black/25 px-4 py-3 space-y-2 text-sm">
+                          <p className="text-white"><span className="text-gray-500">顧客：</span>{completingApt.customerName}</p>
+                          <p className="text-white"><span className="text-gray-500">作品：</span>{completingApt.artworkTitle || '—'}</p>
+                          <p className="text-white"><span className="text-gray-500">預約：</span>{completingApt.date} @ {completingApt.timeSlot}</p>
+                      </div>
+                      <div className="text-sm text-gray-400 space-y-1">
+                          <p>完成後：</p>
+                          <p>✓ 訂單標記為已完成</p>
+                          <p>✓ Artwork 維持已認領</p>
+                          <p>✓ 不再列入待處理</p>
+                      </div>
+                      <div className="flex gap-3 pt-2">
+                          <button
+                              onClick={() => { setIsCompleteModalOpen(false); setCompletingApt(null); }}
+                              className="flex-1 bg-gray-700 text-gray-300 font-bold py-3 rounded-lg hover:bg-gray-600 transition-colors"
+                          >
+                              取消
+                          </button>
+                          <button
+                              onClick={confirmCompleteOrder}
+                              className="flex-1 bg-primary text-black font-bold py-3 rounded-lg hover:bg-yellow-500 transition-colors"
+                          >
+                              完成訂單
+                          </button>
+                      </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {isCatManagerOpen && (
+        <ArtworkTaxonomyManager
+          onClose={() => {
+            setIsCatManagerOpen(false);
+            loadTaxonomyCatalog();
+          }}
+        />
       )}
 
       {/* --- Custom Order Modal --- */}
@@ -1913,6 +3080,32 @@ ${consentLink}`;
           </div>
         </div>
       )}
+      {isCatManagerOpen && (
+        <ArtworkTaxonomyManager
+          onClose={() => {
+            setIsCatManagerOpen(false);
+            void loadTaxonomyCatalog();
+            void loadCategories();
+          }}
+        />
+      )}
+
+      <BatchPngRegenerator
+        open={isBatchPngOpen}
+        onClose={() => setIsBatchPngOpen(false)}
+        artworks={artworks}
+        preset={removeBgPreset}
+        isSystemDefaultPreset={!hasCustomRemoveBgPreset}
+        currentAdminBrand={currentAdminBrand}
+        onFinished={() => loadData()}
+      />
+
+      <TaxonomyMigrationPanel
+        open={isTaxonomyMigrationOpen}
+        onClose={() => setIsTaxonomyMigrationOpen(false)}
+        currentAdminBrand={currentAdminBrand}
+        onFinished={() => { loadData(); void loadTaxonomyCatalog(); }}
+      />
     </div>
   );
 };

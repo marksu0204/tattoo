@@ -1,9 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { db } from '../services/mockBackend';
-import { Appointment, UserRole } from '../types';
+import { Appointment, PublicConsent, UserRole } from '../types';
 import { useApp } from '../App';
-import { CheckCircle, AlertTriangle, Download, Trash2, X, Edit3, Lock } from 'lucide-react';
+import { useBrand } from '../context/BrandContext';
+import { getConsentBrandSubtitle, getConsentHeading } from '../utils/brandPresentation';
+import { parsePublicAppointmentTokenFromHash } from '../utils/publicAppointmentToken';
+import { CheckCircle, AlertTriangle, Download, Trash2, X, Edit3 } from 'lucide-react';
+import { usePageSeo } from '../hooks/usePageSeo';
+import { buildConsentSeo } from '../utils/seoConfig';
 
 // 同意書條款內容
 const CONSENT_TERMS = [
@@ -17,15 +22,22 @@ const CONSENT_TERMS = [
   '立書人在了解以上說明之後，完全理解並認同之情況下才委託紋身工作室；因此萬一發生上述說明內容所列舉之任何不適症狀問題時，本人同意此紋身工作室不必負任何法律責任，且不會對此店家之紋身師提出任何異議及法律告訴。'
 ];
 
+const LEGACY_LINK_MESSAGE = '此同意書連結已更新，請向刺青師索取新的連結。';
+const INVALID_TOKEN_MESSAGE = '此同意書連結無效或已失效，請聯繫刺青師重新取得連結。';
+
 const ConsentForm: React.FC = () => {
-  const { appointmentId } = useParams<{ appointmentId: string }>();
+  const { brand } = useBrand();
+  usePageSeo(buildConsentSeo(brand));
+  const { appointmentId } = useParams<{ appointmentId?: string }>();
+  const location = useLocation();
   const navigate = useNavigate();
   const { user } = useApp();
-  
-  const [appointment, setAppointment] = useState<Appointment | null>(null);
+
+  const [appointment, setAppointment] = useState<PublicConsent | Appointment | null>(null);
+  const [publicToken, setPublicToken] = useState<string | null>(null);
+  const [isAdminView, setIsAdminView] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-  const [accessDenied, setAccessDenied] = useState(false);
   
   // 表單狀態
   const [signerName, setSignerName] = useState('');
@@ -40,11 +52,72 @@ const ConsentForm: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
 
+  const loadAppointment = useCallback(async () => {
+    setIsLoading(true);
+    setError('');
+
+    if (appointmentId) {
+      if (user?.role !== UserRole.ADMIN) {
+        setError(LEGACY_LINK_MESSAGE);
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        const data = await db.getConsent(appointmentId);
+        if (!data) {
+          setError('找不到此預約資料');
+        } else {
+          setIsAdminView(true);
+          setPublicToken(null);
+          if (data.signedAt) {
+            setIsSubmitted(true);
+            setAppointment(data);
+          } else {
+            setAppointment(data);
+            if (data.customerName) setSignerName(data.customerName);
+          }
+        }
+      } catch {
+        setError('載入失敗，請稍後再試');
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    const token = parsePublicAppointmentTokenFromHash(location.hash);
+    setPublicToken(token);
+    setIsAdminView(false);
+
+    if (!token) {
+      setError(INVALID_TOKEN_MESSAGE);
+      setIsLoading(false);
+      return;
+    }
+
+    try {
+      const data = await db.getPublicConsent(token);
+      if (!data) {
+        setError(INVALID_TOKEN_MESSAGE);
+      } else if (data.signed) {
+        setIsSubmitted(true);
+        setAppointment(data);
+      } else {
+        setAppointment(data);
+        if (data.customerName) setSignerName(data.customerName);
+      }
+    } catch {
+      setError('載入失敗，請稍後再試');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [appointmentId, location.hash, user?.role]);
+
   useEffect(() => {
     loadAppointment();
-  }, [appointmentId]);
+  }, [loadAppointment]);
 
-  // 簽名繪圖狀態（用於原生事件監聽器）
   const isDrawingRef = useRef(false);
   
   // 當簽名視窗打開時，鎖定背景滾動（LINE 瀏覽器特殊處理）
@@ -82,8 +155,8 @@ const ConsentForm: React.FC = () => {
       };
     }
   }, [isSignatureModalOpen]);
-  
-  // 為 Canvas 設置原生事件監聽器（處理簽名繪圖）
+
+  // 簽名繪圖狀態（用於原生事件監聽器）
   useEffect(() => {
     if (!isSignatureModalOpen) return;
     
@@ -159,45 +232,6 @@ const ConsentForm: React.FC = () => {
       }
     };
   }, [isSignatureModalOpen]);
-
-  const loadAppointment = async () => {
-    if (!appointmentId) {
-      setError('無效的連結');
-      setIsLoading(false);
-      return;
-    }
-    
-    try {
-      const data = await db.getConsent(appointmentId);
-      if (!data) {
-        setError('找不到此預約資料');
-      } else {
-        // 權限檢查：只有管理員或該預約的用戶可以訪問
-        const isAdmin = user?.role === UserRole.ADMIN;
-        const isOwner = user?.id && data.userId === user.id;
-        
-        if (!isAdmin && !isOwner) {
-          setAccessDenied(true);
-          setIsLoading(false);
-          return;
-        }
-        
-        if (data.signedAt) {
-          setIsSubmitted(true);
-          setAppointment(data);
-        } else {
-          setAppointment(data);
-          // 預填客戶姓名和電話
-          if (data.customerName) setSignerName(data.customerName);
-          if (data.phoneNumber) setSignerPhone(data.phoneNumber);
-        }
-      }
-    } catch (e) {
-      setError('載入失敗，請稍後再試');
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   // === 簽名視窗功能 ===
   const openSignatureModal = () => {
@@ -337,16 +371,29 @@ const ConsentForm: React.FC = () => {
     }
     
     setIsSubmitting(true);
-    
+
     try {
-      const success = await db.saveConsent({
-        id: appointmentId!,
+      const token = publicToken;
+      if (!token) {
+        alert('連結無效，請向刺青師索取新的同意書連結。');
+        return;
+      }
+
+      const result = await db.saveConsent({
+        token,
         signerName: signerName.trim(),
         signerPhone: signerPhone.trim(),
-        signatureData: signatureDataUrl
+        signatureData: signatureDataUrl,
       });
       
-      if (success) {
+      if (result.alreadySubmitted) {
+        setIsSubmitted(true);
+        await loadAppointment();
+        alert('此同意書已完成簽署，無法再次修改。');
+        return;
+      }
+
+      if (result.success) {
         setIsSubmitted(true);
         await loadAppointment();
       } else {
@@ -392,27 +439,9 @@ const ConsentForm: React.FC = () => {
     );
   }
 
-  // === 權限被拒絕 ===
-  if (accessDenied) {
-    return (
-      <div className="min-h-screen bg-white flex items-center justify-center p-4">
-        <div className="text-center">
-          <Lock className="mx-auto text-gray-400 mb-4" size={48} />
-          <h1 className="text-xl font-bold text-gray-800 mb-2">無法存取</h1>
-          <p className="text-gray-500">此同意書僅限預約本人或管理員檢視</p>
-          <button 
-            onClick={() => navigate('/')}
-            className="mt-4 text-blue-600 hover:underline"
-          >
-            返回首頁
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   // === 已簽署完成 ===
   if (isSubmitted && appointment) {
+    const adminAppointment = isAdminView ? (appointment as Appointment) : null;
     return (
       <div className="min-h-screen bg-gray-50 py-8 px-4 print:bg-white print:py-0">
         <div className="max-w-2xl mx-auto">
@@ -426,7 +455,10 @@ const ConsentForm: React.FC = () => {
           {/* 同意書內容 - 可列印 */}
           <div className="bg-white rounded-lg shadow-lg p-6 print:shadow-none print:p-0">
             <div className="text-center border-b pb-4 mb-4">
-              <h1 className="text-2xl font-bold">紋身同意書</h1>
+              <h1 className="text-2xl font-bold">{getConsentHeading(brand)}</h1>
+              {getConsentBrandSubtitle(brand) && (
+                <p className="text-sm text-gray-500">{getConsentBrandSubtitle(brand)}</p>
+              )}
               <p className="text-sm text-gray-500">Tattoo Consent For Operation</p>
             </div>
 
@@ -456,15 +488,19 @@ const ConsentForm: React.FC = () => {
                 <span className="text-gray-500">色彩：</span>
                 <span className="font-bold text-gray-900">{appointment.tattooColor || '-'}</span>
               </div>
-              <div>
-                <span className="text-gray-500">總金額：</span>
-                <span className="font-bold text-gray-900">NT$ {appointment.totalPrice?.toLocaleString() || '-'}</span>
-              </div>
-              <div>
-                <span className="text-gray-500">已付訂金：</span>
-                <span className="font-bold text-gray-900">NT$ {appointment.depositPaid?.toLocaleString() || '-'}</span>
-              </div>
-              {appointment.totalPrice && appointment.depositPaid && (
+              {('totalPrice' in appointment && appointment.totalPrice) && (
+                <div>
+                  <span className="text-gray-500">總金額：</span>
+                  <span className="font-bold text-gray-900">NT$ {appointment.totalPrice?.toLocaleString() || '-'}</span>
+                </div>
+              )}
+              {('depositPaid' in appointment && appointment.depositPaid) && (
+                <div>
+                  <span className="text-gray-500">已付訂金：</span>
+                  <span className="font-bold text-gray-900">NT$ {appointment.depositPaid?.toLocaleString() || '-'}</span>
+                </div>
+              )}
+              {('totalPrice' in appointment && 'depositPaid' in appointment && appointment.totalPrice && appointment.depositPaid) && (
                 <div className="col-span-2">
                   <span className="text-gray-500">餘額：</span>
                   <span className="font-bold text-red-600">NT$ {(appointment.totalPrice - appointment.depositPaid).toLocaleString()}</span>
@@ -485,26 +521,29 @@ const ConsentForm: React.FC = () => {
             {/* 簽署資訊 */}
             <div className="border-t pt-4">
               <div className="grid grid-cols-2 gap-4 text-sm mb-4">
+                {adminAppointment?.signerName && (
                 <div>
                   <span className="text-gray-500">立書人姓名：</span>
-                  <span className="font-bold text-gray-900">{appointment.signerName}</span>
+                  <span className="font-bold text-gray-900">{adminAppointment.signerName}</span>
                 </div>
+                )}
+                {adminAppointment?.signerPhone && (
                 <div>
                   <span className="text-gray-500">電話：</span>
-                  <span className="font-bold text-gray-900">{appointment.signerPhone}</span>
+                  <span className="font-bold text-gray-900">{adminAppointment.signerPhone}</span>
                 </div>
+                )}
                 <div className="col-span-2">
                   <span className="text-gray-500">簽署時間：</span>
-                  <span className="font-bold text-gray-900">{appointment.signedAt}</span>
+                  <span className="font-bold text-gray-900">{appointment.signedAt || adminAppointment?.signedAt}</span>
                 </div>
               </div>
               
-              {/* 簽名圖片 */}
-              {appointment.signatureData && (
+              {adminAppointment?.signatureData && (
                 <div className="border rounded p-2">
                   <p className="text-xs text-gray-500 mb-1">簽名：</p>
                   <img 
-                    src={appointment.signatureData} 
+                    src={adminAppointment.signatureData} 
                     alt="簽名" 
                     className="max-h-24 mx-auto"
                   />
@@ -538,7 +577,10 @@ const ConsentForm: React.FC = () => {
         <div className="bg-white rounded-lg shadow-lg overflow-hidden">
           {/* 標題 */}
           <div className="bg-gradient-to-r from-gray-800 to-gray-900 text-white p-6 text-center">
-            <h1 className="text-2xl font-bold mb-1">紋身同意書</h1>
+            <h1 className="text-2xl font-bold mb-1">{getConsentHeading(brand)}</h1>
+            {getConsentBrandSubtitle(brand) && (
+              <p className="text-sm text-gray-300">{getConsentBrandSubtitle(brand)}</p>
+            )}
             <p className="text-sm text-gray-300">Tattoo Consent For Operation</p>
           </div>
 
@@ -562,7 +604,7 @@ const ConsentForm: React.FC = () => {
                       <span className="font-bold text-gray-900">{appointment.artworkTitle}</span>
                     </div>
                   )}
-                  {appointment.artworkImage && (
+                  {('artworkImage' in appointment) && appointment.artworkImage && (
                     <div className="col-span-2">
                       <img 
                         src={appointment.artworkImage} 
@@ -589,19 +631,19 @@ const ConsentForm: React.FC = () => {
                       <span className="font-bold text-gray-900">{appointment.tattooColor}</span>
                     </div>
                   )}
-                  {appointment.totalPrice && (
+                  {('totalPrice' in appointment && appointment.totalPrice) && (
                     <div>
                       <span className="text-blue-600">總金額：</span>
                       <span className="font-bold text-red-600">NT$ {appointment.totalPrice.toLocaleString()}</span>
                     </div>
                   )}
-                  {appointment.depositPaid && (
+                  {('depositPaid' in appointment && appointment.depositPaid) && (
                     <div>
                       <span className="text-blue-600">已付訂金：</span>
                       <span className="font-bold text-green-600">NT$ {appointment.depositPaid.toLocaleString()}</span>
                     </div>
                   )}
-                  {appointment.totalPrice && appointment.depositPaid && (
+                  {('totalPrice' in appointment && 'depositPaid' in appointment && appointment.totalPrice && appointment.depositPaid) && (
                     <div className="col-span-2">
                       <span className="text-blue-600">餘額：</span>
                       <span className="font-bold text-orange-600">NT$ {(appointment.totalPrice - appointment.depositPaid).toLocaleString()}</span>

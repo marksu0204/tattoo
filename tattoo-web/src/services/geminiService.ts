@@ -3,7 +3,8 @@ import { GoogleGenAI } from "@google/genai";
 
 // Ideally, this should be proxied through a backend to hide the key, 
 // but for this frontend-only demo, we access it from env.
-const apiKey = process.env.API_KEY || ''; 
+// 注意：瀏覽器沒有 process，用 Vite 的 import.meta.env（未設定時與正式站現況相同 → 使用備用文案）
+const apiKey: string = import.meta.env.VITE_GEMINI_API_KEY || '';
 
 let ai: GoogleGenAI | null = null;
 if (apiKey) {

@@ -1,13 +1,20 @@
 
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../App';
+import { useBrand } from '../context/BrandContext';
 import { db } from '../services/mockBackend';
-import { Appointment, UserRole, LINE_ID } from '../types';
+import { Appointment, UserRole } from '../types';
 import { User, Calendar, LogOut, CheckCircle, Clock, MessageCircle, ArrowLeft, WifiOff, FileText } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { usePageSeo } from '../hooks/usePageSeo';
+import { buildProfileSeo } from '../utils/seoConfig';
+import { buildLineInquiryUrl, shouldShowPublicBookingCalendar } from '../utils/brandContact';
+import { lineService } from '../services/lineService';
 
 const UserProfile: React.FC = () => {
   const { user, logout } = useApp();
+  const { brand } = useBrand();
+  usePageSeo(buildProfileSeo(brand));
   const navigate = useNavigate();
   const [myAppointments, setMyAppointments] = useState<Appointment[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -24,7 +31,12 @@ const UserProfile: React.FC = () => {
       setIsLoading(true);
       setError('');
       try {
-        const data = await db.getUserAppointments(user.id);
+        const accessToken = lineService.getAccessToken();
+        if (!accessToken) {
+          setError('LINE登入狀態失效，請重新登入');
+          return;
+        }
+        const data = await db.getUserAppointments(accessToken, user.id);
         setMyAppointments(data);
       } catch (e) {
         console.error("Failed to load user appointments", e);
@@ -37,8 +49,7 @@ const UserProfile: React.FC = () => {
   const getLineUrl = (apt: Appointment) => {
       const info = apt.artworkTitle ? `預約圖案: ${apt.artworkTitle}` : '一般諮詢';
       const message = `你好！我想變更以下預約：\n\n📅 日期: ${apt.date}\n⏰ 時間: ${apt.timeSlot}\n📝 內容: ${info}\n\n請問有哪些時段可以調整？`;
-      // Ensure correct format: /@ID/?message
-      return `https://line.me/R/oaMessage/@${LINE_ID}/?${encodeURIComponent(message)}`;
+      return buildLineInquiryUrl(message, brand);
   };
 
   const handleCopyMessage = (apt: Appointment) => {
@@ -111,7 +122,9 @@ const UserProfile: React.FC = () => {
                   ) : myAppointments.length === 0 ? (
                       <div className="text-center py-8 bg-white/5 rounded-lg border border-dashed border-gray-700">
                           <p className="text-gray-400 mb-2">目前沒有預約</p>
-                          <button onClick={() => navigate('/calendar')} className="text-primary text-sm hover:underline">前往預約行事曆</button>
+                          {shouldShowPublicBookingCalendar(brand) && (
+                            <button onClick={() => navigate('/calendar')} className="text-primary text-sm hover:underline">前往預約行事曆</button>
+                          )}
                       </div>
                   ) : (
                       myAppointments.map(apt => (
@@ -138,8 +151,9 @@ const UserProfile: React.FC = () => {
                                           <p className="text-sm text-gray-500 mt-1 italic">{apt.notes || '一般諮詢'}</p>
                                       )}
                                   </div>
+                                  {getLineUrl(apt) && (
                                   <a 
-                                    href={getLineUrl(apt)}
+                                    href={getLineUrl(apt)!}
                                     target="_blank"
                                     rel="noreferrer"
                                     onClick={() => handleCopyMessage(apt)}
@@ -147,6 +161,7 @@ const UserProfile: React.FC = () => {
                                   >
                                       <MessageCircle size={16} /> 變更預約
                                   </a>
+                                  )}
                               </div>
                               
                               {/* 價格資訊區塊 - 只在有價格時顯示 */}
